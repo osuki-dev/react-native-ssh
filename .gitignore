@@ -1,0 +1,15 @@
+node_modules/
+lib/
+rust/target/
+android/build/
+android/.cxx/
+example/ios/
+example/android/
+example/.expo/
+.DS_Store
+*.log
+
+# Prebuilt Rust artifacts: produced by scripts/build-rust-*.sh (or CI), shipped in the npm tarball, never committed.
+ios/*.xcframework/
+android/rust-libs/
+dist/

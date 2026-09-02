@@ -1,0 +1,92 @@
+{
+  "name": "@osuki-dev/react-native-ssh",
+  "version": "0.1.0",
+  "description": "Native SSH client for React Native and Expo \u2014 russh (Rust) wrapped in Nitro Modules. Connections, shells, exec and keys; bring your own terminal.",
+  "main": "./lib/index.js",
+  "module": "./lib/index.js",
+  "types": "./lib/index.d.ts",
+  "react-native": "./src/index.ts",
+  "source": "./src/index.ts",
+  "files": [
+    "src",
+    "lib",
+    "cpp",
+    "nitrogen",
+    "nitro.json",
+    "*.podspec",
+    "ios/**/*.xcframework/**",
+    "android/build.gradle",
+    "android/gradle.properties",
+    "android/CMakeLists.txt",
+    "android/fix-prefab.gradle",
+    "android/src",
+    "android/rust-libs/**/*.a",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "bun run build:js && bun run build:types",
+    "specs": "nitrogen --logLevel=\"info\"",
+    "header": "bash scripts/gen-header.sh",
+    "rust:test": "cd rust && cargo test",
+    "rust:ios": "bash scripts/build-rust-ios.sh",
+    "rust:android": "bash scripts/build-rust-android.sh",
+    "rust:all": "bun run rust:ios && bun run rust:android",
+    "clean": "rm -rf lib android/build android/.cxx rust/target",
+    "prepack": "bun run build",
+    "test": "bun test src",
+    "build:js": "bun build src/index.ts --outdir lib --format esm --target browser --external react-native-nitro-modules --sourcemap=linked",
+    "build:types": "tsc -p tsconfig.build.json"
+  },
+  "keywords": [
+    "react-native",
+    "expo",
+    "nitro",
+    "nitro-modules",
+    "ssh",
+    "ssh-client",
+    "russh",
+    "rust",
+    "ios",
+    "android"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/osuki-dev/react-native-ssh.git"
+  },
+  "author": "osuki-dev",
+  "license": "Apache-2.0",
+  "bugs": {
+    "url": "https://github.com/osuki-dev/react-native-ssh/issues"
+  },
+  "homepage": "https://github.com/osuki-dev/react-native-ssh#readme",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "peerDependencies": {
+    "react": "*",
+    "react-native": "*",
+    "react-native-nitro-modules": "*"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.0",
+    "nitrogen": "0.36.5",
+    "react": "19.2.8",
+    "react-native": "0.86.2",
+    "react-native-nitro-modules": "0.36.5",
+    "typescript": "~5.9.0"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "react-native": "./src/index.ts",
+      "import": "./lib/index.js",
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  }
+}

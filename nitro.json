@@ -1,0 +1,20 @@
+{
+  "$schema": "https://nitro.margelo.com/nitro.schema.json",
+  "cxxNamespace": ["ssh"],
+  "ios": {
+    "iosModuleName": "OsukiSsh"
+  },
+  "android": {
+    "androidNamespace": ["ssh"],
+    "androidCxxLibName": "OsukiSsh"
+  },
+  "autolinking": {
+    "SshClient": {
+      "all": {
+        "language": "c++",
+        "implementationClassName": "HybridSshClient"
+      }
+    }
+  },
+  "ignorePaths": ["**/node_modules", "example", "lib"]
+}

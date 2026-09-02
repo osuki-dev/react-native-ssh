@@ -1,0 +1,32 @@
+{
+  "expo": {
+    "name": "SSH Example",
+    "slug": "react-native-ssh-example",
+    "version": "0.0.1",
+    "orientation": "portrait",
+    "scheme": "rnsshexample",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "bundleIdentifier": "dev.osuki.ssh.example",
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSLocalNetworkUsageDescription": "Connects to SSH servers on your local network.",
+        "NSAppTransportSecurity": { "NSAllowsArbitraryLoads": true }
+      }
+    },
+    "android": {
+      "package": "dev.osuki.ssh.example",
+      "usesCleartextTraffic": true
+    },
+    "plugins": [
+      [
+        "expo-build-properties",
+        {
+          "ios": { "deploymentTarget": "16.4" },
+          "android": { "minSdkVersion": 24 }
+        }
+      ]
+    ]
+  }
+}

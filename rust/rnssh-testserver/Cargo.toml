@@ -1,0 +1,22 @@
+[package]
+name = "rnssh-testserver"
+description = "Dev-only SSH server for exercising the module from the example app (not published)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "rnssh_testserver"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rnssh-testserver"
+path = "src/main.rs"
+
+[dependencies]
+russh.workspace = true
+tokio = { workspace = true, features = ["full"] }
+log.workspace = true
+env_logger = "0.11"
+rand.workspace = true

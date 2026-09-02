@@ -1,0 +1,26 @@
+{
+  "name": "react-native-ssh-example",
+  "version": "0.0.1",
+  "private": true,
+  "main": "index.js",
+  "scripts": {
+    "start": "expo start --dev-client",
+    "prebuild": "expo prebuild --clean",
+    "ios": "expo run:ios",
+    "android": "expo run:android",
+    "postinstall": "node ./scripts/link-package.js"
+  },
+  "dependencies": {
+    "expo": "~57.0.9",
+    "expo-build-properties": "~57.0.8",
+    "expo-dev-client": "~57.0.0",
+    "expo-status-bar": "~57.0.1",
+    "react": "19.2.8",
+    "react-native": "0.86.2",
+    "react-native-nitro-modules": "0.36.5"
+  },
+  "devDependencies": {
+    "@types/react": "~19.2.18",
+    "typescript": "~5.9.0"
+  }
+}

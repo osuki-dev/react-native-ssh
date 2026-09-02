@@ -1,0 +1,77 @@
+[workspace]
+members = ["rnssh-core", "rnssh-ffi", "rnssh-testserver"]
+default-members = ["rnssh-core", "rnssh-ffi"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/osuki-dev/react-native-ssh"
+rust-version = "1.85"
+
+[workspace.dependencies]
+# SSH. Crypto backend is aws-lc-rs (default, AWS maintained, FIPS lineage).
+# `flate2` (compression) is deliberately NOT enabled: no benefit on mobile
+# links and it is where the CVE-2026-46702 decompression-bomb class lives.
+# `des` / `dsa` are insecure and must never be enabled.
+russh = { version = "0.63.1", default-features = false, features = ["aws-lc-rs", "rsa"] }
+tokio = { version = "1.47", features = ["rt-multi-thread", "net", "sync", "time", "io-util", "macros"] }
+thiserror = "2"
+log = "0.4"
+zeroize = { version = "1.8", features = ["derive"] }
+base64 = "0.22"
+rand = { version = "0.10", features = ["thread_rng"] }
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+panic = "deny"
+unimplemented = "deny"
+todo = "deny"
+
+[profile.release]
+# Size-optimised for protocol plumbing, speed-optimised for crypto: measured
+# on the loopback throughput benchmark (tests/e2e.rs perf_shell_throughput)
+# this matches all -O3 within noise (~760 MB/s) while the code segment is
+# ~15% smaller. Dropping aws-lc to -Os would save another 20% but costs ~4%.
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+# Unwinding across the C ABI is undefined; abort is the only sane choice for FFI.
+panic = "abort"
+strip = "symbols"
+debug = false
+
+# Crypto and key-exchange crates stay speed-optimised (their inner loops are
+# where the CPU time goes; everything else is protocol plumbing).
+[profile.release.package.aws-lc-sys]
+opt-level = 3
+[profile.release.package.aws-lc-rs]
+opt-level = 3
+[profile.release.package.aes]
+opt-level = 3
+[profile.release.package.ctr]
+opt-level = 3
+[profile.release.package.cbc]
+opt-level = 3
+[profile.release.package.ghash]
+opt-level = 3
+[profile.release.package.polyval]
+opt-level = 3
+[profile.release.package.curve25519-dalek]
+opt-level = 3
+[profile.release.package.ed25519-dalek]
+opt-level = 3
+[profile.release.package.ml-kem]
+opt-level = 3
+[profile.release.package.sha2]
+opt-level = 3
+[profile.release.package.hmac]
+opt-level = 3
+[profile.release.package.russh-cryptovec]
+opt-level = 3
+
+[profile.dev]
+panic = "abort"

@@ -1,0 +1,7 @@
+# Google Play requires 16 KB page alignment for 64-bit Android native libs.
+# NDK r28+ does this by default; the explicit flag keeps older NDKs correct.
+[target.aarch64-linux-android]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+
+[target.x86_64-linux-android]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
