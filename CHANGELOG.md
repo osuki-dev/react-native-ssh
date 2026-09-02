@@ -1,5 +1,11 @@
 # @osuki-dev/react-native-ssh
 
+## 0.1.1
+
+### Patch Changes
+
+- [`7512b51`](https://github.com/osuki-dev/react-native-ssh/commit/7512b51a8ec09fa8b071113c795f7e3ae3105148) Thanks [@BANG88](https://github.com/BANG88)! - Republish with the prebuilt Rust archives. `0.1.0` was published from a checkout without them (they are gitignored), so it cannot link on either platform. `npm pack` / `npm publish` now refuse to run when the archives are missing or do not match `cpp/rnssh.h`.
+
 ## 0.1.0
 
 ### Minor Changes
