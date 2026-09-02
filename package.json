@@ -1,6 +1,6 @@
 {
   "name": "@osuki-dev/react-native-ssh",
-  "version": "0.1.0",
+  "version": "0.0.0",
   "description": "Native SSH client for React Native and Expo \u2014 russh (Rust) wrapped in Nitro Modules. Connections, shells, exec and keys; bring your own terminal.",
   "main": "./lib/index.js",
   "module": "./lib/index.js",
@@ -37,7 +37,10 @@
     "prepack": "bun run build",
     "test": "bun test src",
     "build:js": "bun build src/index.ts --outdir lib --format esm --target browser --external react-native-nitro-modules --sourcemap=linked",
-    "build:types": "tsc -p tsconfig.build.json"
+    "build:types": "tsc -p tsconfig.build.json",
+    "changeset": "changeset",
+    "version:packages": "changeset version && bun install --lockfile-only",
+    "release:packages": "bun run build && changeset publish"
   },
   "keywords": [
     "react-native",
@@ -63,7 +66,7 @@
   "homepage": "https://github.com/osuki-dev/react-native-ssh#readme",
   "publishConfig": {
     "access": "public",
-    "registry": "https://registry.npmjs.org/"
+    "provenance": true
   },
   "peerDependencies": {
     "react": "*",
@@ -76,7 +79,9 @@
     "react": "19.2.8",
     "react-native": "0.86.2",
     "react-native-nitro-modules": "0.36.5",
-    "typescript": "~5.9.0"
+    "typescript": "~5.9.0",
+    "@changesets/cli": "^2.31.1",
+    "@changesets/changelog-github": "^0.7.0"
   },
   "type": "module",
   "sideEffects": false,

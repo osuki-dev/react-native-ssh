@@ -1,0 +1,12 @@
+{
+  "$schema": "https://unpkg.com/@changesets/config@3.1.4/schema.json",
+  "changelog": ["@changesets/changelog-github", { "repo": "osuki-dev/react-native-ssh" }],
+  "commit": false,
+  "fixed": [],
+  "linked": [],
+  "access": "public",
+  "baseBranch": "main",
+  "updateInternalDependencies": "minor",
+  "onlyUpdatePeerDependentsWhenOutOfRange": true,
+  "ignore": ["react-native-ssh-example"]
+}

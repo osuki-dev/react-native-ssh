@@ -1,0 +1,80 @@
+name: Release
+
+# Same shape as osuki-dev/kit: every push to main either opens/updates the
+# "Version Packages" PR (changesets pending) or, right after that PR was
+# merged, publishes the bumped version to npm. Merging the version PR is the
+# deliberate human gate. workflow_dispatch re-runs a release that failed after
+# the merge.
+#
+# Differs from kit in one way: this package ships prebuilt Rust archives for
+# iOS and Android, so the job runs on macOS and builds them before publishing.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Version or publish
+    runs-on: macos-15
+    timeout-minutes: 45
+    permissions:
+      contents: write # commit the version bump, push tags
+      pull-requests: write # open the "Version Packages" PR
+      id-token: write # npm trusted publishing (OIDC)
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # changesets diffs against the base branch
+
+      - uses: oven-sh/setup-bun@v2
+
+      # npm publishes: it is the client that supports trusted publishing, so no
+      # NPM_TOKEN is stored anywhere. Deliberately no `registry-url` (see the
+      # note in osuki-dev/kit: an empty authToken in .npmrc beats OIDC).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Use an npm that supports trusted publishing
+        run: npm install -g npm@^11.5.1
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios,aarch64-linux-android,x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - run: cargo install cargo-ndk --locked
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Verify before releasing
+        run: |
+          bun run typecheck
+          bun test src
+          (cd rust && cargo test --workspace)
+
+      - name: Build the prebuilt Rust archives
+        # These are gitignored and live only in the npm tarball.
+        run: |
+          bash scripts/build-rust-ios.sh
+          bash scripts/build-rust-android.sh
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_LATEST_HOME }}
+
+      - name: Create the version PR, or publish
+        uses: changesets/action@v1
+        with:
+          version: bun run version:packages
+          publish: bun run release:packages
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -142,6 +142,13 @@ Contributor toolchain: `rustup` (targets `aarch64-apple-ios`,
 `aarch64-apple-ios-sim`, `x86_64-apple-ios`, `aarch64-linux-android`,
 `x86_64-linux-android`), `cargo-ndk`, `cbindgen`, Xcode, Android NDK r27+.
 
+## Releasing
+
+Same flow as `osuki-dev/kit`: add a changeset with each change
+(`bun changeset`); on `main` the Release workflow opens a "Version Packages"
+PR, and merging it builds the prebuilt archives on macOS and publishes to npm
+via trusted publishing (no token in the repo).
+
 ## License
 
 Apache-2.0. russh is Apache-2.0; aws-lc is ISC / Apache-2.0; Nitro Modules is MIT.
