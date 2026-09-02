@@ -1,7 +1,7 @@
 {
   "name": "@osuki-dev/react-native-ssh",
   "version": "0.1.0",
-  "description": "Native SSH client for React Native and Expo — russh (Rust) wrapped in Nitro Modules. Connections, shells, exec and keys; bring your own terminal.",
+  "description": "Native SSH client for React Native and Expo \u2014 russh (Rust) wrapped in Nitro Modules. Connections, shells, exec and keys; bring your own terminal.",
   "main": "./lib/index.js",
   "module": "./lib/index.js",
   "types": "./lib/index.d.ts",
@@ -34,13 +34,14 @@
     "rust:android": "bash scripts/build-rust-android.sh",
     "rust:all": "bun run rust:ios && bun run rust:android",
     "clean": "rm -rf lib android/build android/.cxx rust/target",
-    "prepack": "bun run build",
+    "prepack": "bash scripts/check-prebuilt.sh && bun run build",
     "test": "bun test src",
     "build:js": "bun build src/index.ts --outdir lib --format esm --target browser --external react-native-nitro-modules --sourcemap=linked",
     "build:types": "tsc -p tsconfig.build.json",
     "changeset": "changeset",
     "version:packages": "changeset version && bun install --lockfile-only",
-    "release:packages": "bun run build && changeset publish"
+    "release:packages": "bun run build && changeset publish",
+    "check:prebuilt": "bash scripts/check-prebuilt.sh"
   },
   "keywords": [
     "react-native",
