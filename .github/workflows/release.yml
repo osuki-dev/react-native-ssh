@@ -118,7 +118,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Tag
+      - name: Push the release tag
+        # `changeset publish` already created v<version> locally.
         run: |
-          git tag "v${{ needs.version.outputs.version }}"
+          git tag "v${{ needs.version.outputs.version }}" 2>/dev/null || true
           git push origin "v${{ needs.version.outputs.version }}"
