@@ -114,12 +114,16 @@ jobs:
         run: RNSSH_STRICT=1 bash scripts/check-prebuilt.sh
 
       - name: Publish ${{ needs.version.outputs.version }}
-        run: bun run release:packages
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Explicit npm publish (not `changeset publish`) so npm's own output —
+        # registry, tarball contents, provenance — is visible in the log.
+        run: |
+          npm --version
+          echo "registry: $(npm config get registry)"
+          npm publish --dry-run --access public 2>&1 | tail -40
+          npm publish --provenance --access public
+          echo "published: $(npm view "@osuki-dev/react-native-ssh@${{ needs.version.outputs.version }}" version)"
 
       - name: Push the release tag
-        # `changeset publish` already created v<version> locally.
         run: |
           git tag "v${{ needs.version.outputs.version }}" 2>/dev/null || true
           git push origin "v${{ needs.version.outputs.version }}"
