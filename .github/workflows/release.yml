@@ -110,6 +110,9 @@ jobs:
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_LATEST_HOME }}
 
+      - name: Check the archives match the C ABI
+        run: RNSSH_STRICT=1 bash scripts/check-prebuilt.sh
+
       - name: Publish ${{ needs.version.outputs.version }}
         run: bun run release:packages
         env:
