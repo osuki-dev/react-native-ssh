@@ -1,13 +1,11 @@
 name: Release
 
-# Same shape as osuki-dev/kit: every push to main either opens/updates the
-# "Version Packages" PR (changesets pending) or, right after that PR was
-# merged, publishes the bumped version to npm. Merging the version PR is the
-# deliberate human gate. workflow_dispatch re-runs a release that failed after
-# the merge.
-#
-# Differs from kit in one way: this package ships prebuilt Rust archives for
-# iOS and Android, so the job runs on macOS and builds them before publishing.
+# Same idea as osuki-dev/kit: a push to main is not a release. With changesets
+# pending, the cheap `version` job opens/updates the "Version Packages" PR.
+# Once that PR is merged (no changesets left, package.json carries the new
+# version), the expensive `publish` job builds the prebuilt Rust archives on
+# macOS and publishes to npm with trusted publishing. Any other push to main
+# (docs, CI tweaks, a version already on npm) ends after the cheap job.
 on:
   push:
     branches: [main]
@@ -21,28 +19,69 @@ permissions:
   contents: read
 
 jobs:
-  release:
-    name: Version or publish
-    runs-on: macos-15
-    timeout-minutes: 45
+  version:
+    name: Version PR or decide to publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
-      contents: write # commit the version bump, push tags
+      contents: write # commit the version bump
       pull-requests: write # open the "Version Packages" PR
-      id-token: write # npm trusted publishing (OIDC)
+    outputs:
+      publish: ${{ steps.decide.outputs.publish }}
+      version: ${{ steps.decide.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0 # changesets diffs against the base branch
-
       - uses: oven-sh/setup-bun@v2
-
-      # npm publishes: it is the client that supports trusted publishing, so no
-      # NPM_TOKEN is stored anywhere. Deliberately no `registry-url` (see the
-      # note in osuki-dev/kit: an empty authToken in .npmrc beats OIDC).
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Install
+        run: bun install --frozen-lockfile
 
+      - name: Open or update the version PR
+        id: changesets
+        uses: changesets/action@v1
+        with:
+          version: bun run version:packages
+          # No `publish` here: publishing happens in the macOS job below.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Decide whether this push is a release
+        id: decide
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if [ "${{ steps.changesets.outputs.hasChangesets }}" = "true" ]; then
+            echo "changesets pending → version PR only"; echo "publish=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ "$VERSION" = "0.0.0" ]; then
+            echo "placeholder version → nothing to publish"; echo "publish=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if npm view "@osuki-dev/react-native-ssh@$VERSION" version >/dev/null 2>&1; then
+            echo "$VERSION is already on npm"; echo "publish=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "publishing $VERSION"; echo "publish=true" >> "$GITHUB_OUTPUT"
+
+  publish:
+    name: Build archives and publish
+    needs: version
+    if: needs.version.outputs.publish == 'true'
+    runs-on: macos-15
+    timeout-minutes: 45
+    permissions:
+      contents: write # push the release tag
+      id-token: write # npm trusted publishing (OIDC)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      # Deliberately no `registry-url` (see osuki-dev/kit: an empty authToken
+      # in .npmrc would beat OIDC).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - name: Use an npm that supports trusted publishing
         run: npm install -g npm@^11.5.1
 
@@ -64,17 +103,19 @@ jobs:
           (cd rust && cargo test --workspace)
 
       - name: Build the prebuilt Rust archives
-        # These are gitignored and live only in the npm tarball.
+        # Gitignored; they exist only inside the npm tarball.
         run: |
           bash scripts/build-rust-ios.sh
           bash scripts/build-rust-android.sh
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_LATEST_HOME }}
 
-      - name: Create the version PR, or publish
-        uses: changesets/action@v1
-        with:
-          version: bun run version:packages
-          publish: bun run release:packages
+      - name: Publish ${{ needs.version.outputs.version }}
+        run: bun run release:packages
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag
+        run: |
+          git tag "v${{ needs.version.outputs.version }}"
+          git push origin "v${{ needs.version.outputs.version }}"

@@ -146,8 +146,10 @@ Contributor toolchain: `rustup` (targets `aarch64-apple-ios`,
 
 Same flow as `osuki-dev/kit`: add a changeset with each change
 (`bun changeset`); on `main` the Release workflow opens a "Version Packages"
-PR, and merging it builds the prebuilt archives on macOS and publishes to npm
-via trusted publishing (no token in the repo).
+PR; merging it is the release: only then does a macOS job build the prebuilt
+archives and publish to npm via trusted publishing (no token in the repo).
+Other pushes to main stop after a cheap check. The native cross-compile also
+runs on pull requests that touch `rust/`, the build scripts or `cpp/rnssh.h`.
 
 ## License
 

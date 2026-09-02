@@ -1,0 +1,44 @@
+name: Native prebuilds
+
+# The expensive macOS job: cross-compiles the Rust core for iOS and Android
+# exactly as the Release workflow will. Runs only when native inputs change,
+# or on demand — not on every push.
+on:
+  pull_request:
+    paths:
+      - "rust/**"
+      - "scripts/build-rust-*.sh"
+      - "cpp/rnssh.h"
+      - ".github/workflows/native.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: native-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: Prebuilt Rust archives (iOS + Android)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios,aarch64-linux-android,x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - run: cargo install cargo-ndk --locked
+      - run: bash scripts/build-rust-ios.sh
+      - run: bash scripts/build-rust-android.sh
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_LATEST_HOME }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rust-prebuilt
+          path: |
+            ios/RnsshFFI.xcframework
+            android/rust-libs
