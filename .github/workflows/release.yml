@@ -127,3 +127,13 @@ jobs:
         run: |
           git tag "v${{ needs.version.outputs.version }}" 2>/dev/null || true
           git push origin "v${{ needs.version.outputs.version }}"
+
+      - name: GitHub release
+        # Notes come from the CHANGELOG section changesets wrote for this version.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          bash scripts/release-notes.sh "$VERSION" > /tmp/notes.md
+          printf '\n\nnpm: https://www.npmjs.com/package/@osuki-dev/react-native-ssh/v/%s\n' "$VERSION" >> /tmp/notes.md
+          gh release create "v$VERSION" --title "v$VERSION" --notes-file /tmp/notes.md --verify-tag
