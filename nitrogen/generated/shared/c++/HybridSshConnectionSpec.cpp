@@ -23,6 +23,7 @@ namespace margelo::nitro::ssh {
       prototype.registerHybridMethod("openShell", &HybridSshConnectionSpec::openShell);
       prototype.registerHybridMethod("exec", &HybridSshConnectionSpec::exec);
       prototype.registerHybridMethod("execText", &HybridSshConnectionSpec::execText);
+      prototype.registerHybridMethod("forwardLocal", &HybridSshConnectionSpec::forwardLocal);
       prototype.registerHybridMethod("disconnect", &HybridSshConnectionSpec::disconnect);
     });
   }

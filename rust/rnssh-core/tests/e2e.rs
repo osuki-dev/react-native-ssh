@@ -11,13 +11,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rnssh_core::{
-    Auth, ConnectOptions, Connection, ConnectionEvents, HostKey, KeyType,
-    KeyboardInteractiveChallenge, Shell, ShellEvents, ShellOptions, StreamKind,
+    Auth, ConnectOptions, Connection, ConnectionEvents, ForwardEvents, ForwardOptions, HostKey,
+    KeyType, KeyboardInteractiveChallenge, Shell, ShellEvents, ShellOptions, StreamKind,
 };
 use russh::keys::{Algorithm, PrivateKey, PublicKey};
 use russh::server::{self, Auth as ServerAuth, Msg, Server as _, Session};
 use russh::{Channel, ChannelId, MethodKind, MethodSet};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 use zeroize::Zeroizing;
 
@@ -1556,4 +1556,245 @@ async fn second_factor_after_password_and_after_key() {
     .await
     .unwrap_err();
     assert_eq!(err.code, rnssh_core::ErrorCode::AuthFailed, "{err}");
+}
+
+// ---------- local port forwarding ----------
+
+/// Server that honours direct-tcpip by connecting to the requested target
+/// (loopback only) and piping bytes, like sshd with AllowTcpForwarding.
+struct Forwarding;
+struct ForwardingHandler;
+impl server::Server for Forwarding {
+    type Handler = ForwardingHandler;
+    fn new_client(&mut self, _: Option<std::net::SocketAddr>) -> ForwardingHandler {
+        ForwardingHandler
+    }
+}
+impl server::Handler for ForwardingHandler {
+    type Error = russh::Error;
+    async fn auth_password(&mut self, _u: &str, _p: &str) -> Result<ServerAuth, Self::Error> {
+        Ok(ServerAuth::Accept)
+    }
+    async fn channel_open_direct_tcpip(
+        &mut self,
+        channel: Channel<Msg>,
+        host: &str,
+        port: u32,
+        _oa: &str,
+        _op: u32,
+        reply: server::ChannelOpenHandle,
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        if host != "127.0.0.1" && host != "localhost" {
+            reply
+                .reject(russh::ChannelOpenFailure::AdministrativelyProhibited)
+                .await;
+            return Ok(());
+        }
+        match TcpStream::connect(("127.0.0.1", port as u16)).await {
+            Ok(mut target) => {
+                reply.accept().await;
+                tokio::spawn(async move {
+                    let mut stream = channel.into_stream();
+                    let _ = tokio::io::copy_bidirectional(&mut target, &mut stream).await;
+                });
+            }
+            Err(_) => {
+                reply.reject(russh::ChannelOpenFailure::ConnectFailed).await;
+            }
+        }
+        Ok(())
+    }
+}
+
+async fn start_echo_target() -> u16 {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                break;
+            };
+            tokio::spawn(async move {
+                let (mut r, mut w) = sock.split();
+                let _ = tokio::io::copy(&mut r, &mut w).await;
+            });
+        }
+    });
+    port
+}
+
+async fn start_forwarding_server() -> (u16, tokio::task::JoinHandle<()>) {
+    let host_key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
+    let config = Arc::new(server::Config {
+        auth_rejection_time_initial: Some(Duration::from_millis(0)),
+        keys: vec![host_key],
+        ..Default::default()
+    });
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let task = tokio::spawn(async move {
+        let _ = Forwarding.run_on_socket(config, &listener).await;
+    });
+    (port, task)
+}
+
+struct ForwardSink {
+    closed: Mutex<Option<oneshot::Sender<Option<String>>>>,
+}
+impl ForwardEvents for ForwardSink {
+    fn on_closed(&self, reason: Option<String>) {
+        if let Some(tx) = self.closed.lock().unwrap().take() {
+            let _ = tx.send(reason);
+        }
+    }
+}
+fn forward_sink() -> (Arc<ForwardSink>, oneshot::Receiver<Option<String>>) {
+    let (tx, rx) = oneshot::channel();
+    (
+        Arc::new(ForwardSink {
+            closed: Mutex::new(Some(tx)),
+        }),
+        rx,
+    )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn local_forward_tunnels_tcp() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let echo_port = start_echo_target().await;
+    let (port, _server) = start_forwarding_server().await;
+    let conn = Connection::connect(
+        options(port, Auth::Password(Zeroizing::new("x".into()))),
+        Events::accepting(),
+    )
+    .await
+    .unwrap();
+
+    let (sink, closed_rx) = forward_sink();
+    let fwd = conn
+        .forward_local(
+            ForwardOptions {
+                remote_port: echo_port,
+                ..Default::default()
+            },
+            sink,
+        )
+        .await
+        .unwrap();
+    assert!(fwd.is_open());
+    assert_ne!(fwd.local_port(), 0);
+
+    // Ten concurrent clients, each echoing 200 KiB through the tunnel.
+    let mut tasks = Vec::new();
+    for i in 0..10u8 {
+        let local_port = fwd.local_port();
+        tasks.push(tokio::spawn(async move {
+            let mut s = TcpStream::connect(("127.0.0.1", local_port)).await.unwrap();
+            let payload = vec![i; 200 * 1024];
+            s.write_all(&payload).await.unwrap();
+            let mut back = vec![0u8; payload.len()];
+            s.read_exact(&mut back).await.unwrap();
+            assert_eq!(back, payload);
+        }));
+    }
+    for t in tasks {
+        t.await.unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(fwd.active_connections(), 0);
+
+    // Close: listener gone, on_closed(None) delivered.
+    fwd.close().await;
+    assert!(!fwd.is_open());
+    assert_eq!(closed_rx.await.unwrap(), None);
+    assert!(
+        TcpStream::connect(("127.0.0.1", fwd.local_port()))
+            .await
+            .is_err()
+    );
+    fwd.close().await; // idempotent
+    conn.disconnect().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn local_forward_rejects_bad_options_and_refused_targets() {
+    use tokio::io::AsyncReadExt;
+    let (port, _server) = start_forwarding_server().await;
+    let conn = Connection::connect(
+        options(port, Auth::Password(Zeroizing::new("x".into()))),
+        Events::accepting(),
+    )
+    .await
+    .unwrap();
+
+    // Non-loopback bind is refused up front.
+    let (sink, _) = forward_sink();
+    let err = conn
+        .forward_local(
+            ForwardOptions {
+                bind: "0.0.0.0".into(),
+                remote_port: 22,
+                ..Default::default()
+            },
+            sink,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, rnssh_core::ErrorCode::InvalidArgument);
+
+    // Target the server cannot reach: the local client gets EOF, the forward stays up.
+    let (sink, _) = forward_sink();
+    let fwd = conn
+        .forward_local(
+            ForwardOptions {
+                remote_port: 1, // nothing listens there
+                ..Default::default()
+            },
+            sink,
+        )
+        .await
+        .unwrap();
+    let mut s = TcpStream::connect(("127.0.0.1", fwd.local_port()))
+        .await
+        .unwrap();
+    let mut buf = [0u8; 1];
+    let n = tokio::time::timeout(Duration::from_secs(5), s.read(&mut buf))
+        .await
+        .expect("EOF in time")
+        .unwrap_or(0);
+    assert_eq!(n, 0);
+    assert!(fwd.is_open());
+    fwd.close().await;
+    conn.disconnect().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn local_forward_closes_when_connection_drops() {
+    let echo_port = start_echo_target().await;
+    let (port, server) = start_forwarding_server().await;
+    let conn = Connection::connect(
+        options(port, Auth::Password(Zeroizing::new("x".into()))),
+        Events::accepting(),
+    )
+    .await
+    .unwrap();
+    let (sink, closed_rx) = forward_sink();
+    let fwd = conn
+        .forward_local(
+            ForwardOptions {
+                remote_port: echo_port,
+                ..Default::default()
+            },
+            sink,
+        )
+        .await
+        .unwrap();
+    server.abort();
+    let reason = tokio::time::timeout(Duration::from_secs(5), closed_rx)
+        .await
+        .expect("forward closed after the connection dropped")
+        .unwrap();
+    assert!(reason.is_some(), "a dropped connection is not an app close");
+    assert!(!fwd.is_open());
 }

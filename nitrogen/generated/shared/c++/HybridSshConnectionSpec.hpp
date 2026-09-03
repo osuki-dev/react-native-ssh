@@ -25,6 +25,12 @@ namespace margelo::nitro::ssh { struct SshShellHandlers; }
 namespace margelo::nitro::ssh { struct SshExecResult; }
 // Forward declaration of `SshExecTextResult` to properly resolve imports.
 namespace margelo::nitro::ssh { struct SshExecTextResult; }
+// Forward declaration of `HybridSshLocalForwardSpec` to properly resolve imports.
+namespace margelo::nitro::ssh { class HybridSshLocalForwardSpec; }
+// Forward declaration of `SshForwardOptionsSpec` to properly resolve imports.
+namespace margelo::nitro::ssh { struct SshForwardOptionsSpec; }
+// Forward declaration of `SshForwardHandlers` to properly resolve imports.
+namespace margelo::nitro::ssh { struct SshForwardHandlers; }
 
 #include <string>
 #include "SshHostKey.hpp"
@@ -35,6 +41,9 @@ namespace margelo::nitro::ssh { struct SshExecTextResult; }
 #include "SshShellHandlers.hpp"
 #include "SshExecResult.hpp"
 #include "SshExecTextResult.hpp"
+#include "HybridSshLocalForwardSpec.hpp"
+#include "SshForwardOptionsSpec.hpp"
+#include "SshForwardHandlers.hpp"
 
 namespace margelo::nitro::ssh {
 
@@ -75,6 +84,7 @@ namespace margelo::nitro::ssh {
       virtual std::shared_ptr<Promise<std::shared_ptr<HybridSshShellSpec>>> openShell(const SshShellOptionsSpec& options, const SshShellHandlers& handlers) = 0;
       virtual std::shared_ptr<Promise<SshExecResult>> exec(const std::string& command) = 0;
       virtual std::shared_ptr<Promise<SshExecTextResult>> execText(const std::string& command) = 0;
+      virtual std::shared_ptr<Promise<std::shared_ptr<HybridSshLocalForwardSpec>>> forwardLocal(const SshForwardOptionsSpec& options, const SshForwardHandlers& handlers) = 0;
       virtual std::shared_ptr<Promise<void>> disconnect() = 0;
 
     protected:

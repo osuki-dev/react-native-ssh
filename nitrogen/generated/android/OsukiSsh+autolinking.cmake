@@ -34,6 +34,7 @@ target_sources(
   ../nitrogen/generated/android/OsukiSshOnLoad.cpp
   # Shared Nitrogen C++ sources
   ../nitrogen/generated/shared/c++/HybridSshShellSpec.cpp
+  ../nitrogen/generated/shared/c++/HybridSshLocalForwardSpec.cpp
   ../nitrogen/generated/shared/c++/HybridSshConnectionSpec.cpp
   ../nitrogen/generated/shared/c++/HybridSshClientSpec.cpp
   # Android-specific Nitrogen C++ sources

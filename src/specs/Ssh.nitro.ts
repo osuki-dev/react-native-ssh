@@ -114,6 +114,23 @@ export interface SshExecTextResult {
   exitCode: number
 }
 
+export interface SshForwardOptionsSpec {
+  /** Loopback address to listen on. Anything else is refused. */
+  bindAddress: string
+  /** 0 = pick a free port. */
+  localPort: number
+  /** Destination as resolved by the server. */
+  remoteHost: string
+  remotePort: number
+  /** 0 = default (64). */
+  maxConnections: number
+}
+
+export interface SshForwardHandlers {
+  /** Exactly once. `reason` is undefined for an app-initiated close. */
+  onClosed: (reason?: string) => void
+}
+
 export type SshKeyType = 'ed25519' | 'ecdsaP256' | 'ecdsaP384' | 'rsa3072' | 'rsa4096'
 
 export interface SshKeyPair {
@@ -150,6 +167,17 @@ export interface SshShell extends HybridObject<{ ios: 'c++'; android: 'c++' }> {
   close(): Promise<void>
 }
 
+export interface SshLocalForward extends HybridObject<{ ios: 'c++'; android: 'c++' }> {
+  readonly id: number
+  /** The loopback port that is listening. */
+  readonly localPort: number
+  readonly isOpen: boolean
+  /** Tunnelled TCP connections currently alive. */
+  readonly activeConnections: number
+  /** Stop listening and drop tunnelled connections. Idempotent. */
+  close(): Promise<void>
+}
+
 export interface SshConnection extends HybridObject<{ ios: 'c++'; android: 'c++' }> {
   readonly id: number
   readonly isConnected: boolean
@@ -163,6 +191,8 @@ export interface SshConnection extends HybridObject<{ ios: 'c++'; android: 'c++'
   exec(command: string): Promise<SshExecResult>
   /** Like `exec`, output decoded as UTF-8 (invalid sequences become U+FFFD). */
   execText(command: string): Promise<SshExecTextResult>
+  /** Local port forward (`direct-tcpip`): 127.0.0.1:localPort → remoteHost:remotePort via the server. */
+  forwardLocal(options: SshForwardOptionsSpec, handlers: SshForwardHandlers): Promise<SshLocalForward>
   /** Close the transport. Idempotent. */
   disconnect(): Promise<void>
 }

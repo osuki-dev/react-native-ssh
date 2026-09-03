@@ -26,6 +26,7 @@ import {
   nativeVersion,
   SshError,
   type SshConnection,
+  type SshLocalForward,
   type SshShell,
 } from '@osuki-dev/react-native-ssh'
 
@@ -60,6 +61,7 @@ export default function App() {
   const [output, setOutput] = useState('')
   const [connection, setConnection] = useState<SshConnection | null>(null)
   const [shell, setShell] = useState<SshShell | null>(null)
+  const [forward, setForward] = useState<SshLocalForward | null>(null)
   const scrollRef = useRef<ScrollView>(null)
 
   const append = useCallback((line: string) => {
@@ -184,6 +186,8 @@ export default function App() {
 
   const onDisconnect = async () => {
     try {
+      await forward?.close()
+      setForward(null)
       await shell?.close()
       await connection?.disconnect()
       append('disconnected by app')
@@ -192,6 +196,33 @@ export default function App() {
     } finally {
       setShell(null)
       setConnection(null)
+    }
+  }
+
+  // Tunnel to the test server's HTTP endpoint (ssh port + 1 on the server's
+  // loopback) and fetch through it — what a gateway-over-SSH setup does.
+  const onForward = async () => {
+    if (connection === null) return
+    try {
+      if (forward !== null) {
+        await forward.close()
+        setForward(null)
+        append('forward closed')
+        return
+      }
+      const fwd = await connection.forwardLocal(
+        { remoteHost: '127.0.0.1', remotePort: (Number(port) || 22) + 1 },
+        { onClosed: (reason) => { append(`forward closed${reason ? `: ${reason}` : ''}`); setForward(null) } },
+      )
+      setForward(fwd)
+      append(`forward 127.0.0.1:${fwd.localPort} → server:${(Number(port) || 22) + 1}`)
+      const t0 = Date.now()
+      const res = await fetch(`${fwd.httpUrl}/hello?via=tunnel`)
+      const body = await res.text()
+      append(`fetch ${res.status} in ${Date.now() - t0}ms: ${body.slice(0, 120)}`)
+      append(`active tunnels: ${fwd.activeConnections}`)
+    } catch (e) {
+      append(`forward failed ${describe(e)}`)
     }
   }
 
@@ -250,6 +281,9 @@ export default function App() {
         </Pressable>
         <Pressable style={[styles.button, connecting === null && styles.buttonDisabled]} onPress={onCancel} disabled={connecting === null} testID="cancel">
           <Text style={styles.buttonText}>Cancel</Text>
+        </Pressable>
+        <Pressable style={[styles.button, connection === null && styles.buttonDisabled]} onPress={onForward} disabled={connection === null} testID="forward">
+          <Text style={styles.buttonText}>{forward === null ? 'Forward' : 'Unforward'}</Text>
         </Pressable>
       </View>
       <Modal visible={prompt !== null} transparent animationType="fade" onRequestClose={() => prompt?.resolve(undefined)}>

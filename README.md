@@ -13,6 +13,9 @@ terminal**.
   keyboard-interactive (2FA), automatic password → keyboard-interactive fallback.
 - Host key verification is a callback you control; nothing is stored for you.
 - Typed errors (`SshError.code`: `AUTH_FAILED`, `HOST_KEY_REJECTED`, `TIMEOUT`, …).
+- Local port forwarding (`direct-tcpip`): a loopback listener tunnelled through
+  the session, so an HTTP/WebSocket client on the phone can reach a service
+  bound to the server's loopback without exposing it.
 - Ed25519 / ECDSA / RSA key generation and inspection (Ed25519 by default;
   RSA user keys are supported for legacy servers but not recommended, see
   Security notes).
@@ -78,6 +81,21 @@ await shell.close()
 await conn.disconnect()
 ```
 
+Port forwarding (e.g. a gateway that only listens on the server's loopback):
+
+```ts
+const tunnel = await conn.forwardLocal(
+  { remoteHost: '127.0.0.1', remotePort: 8787 },   // as seen from the server
+  { onClosed: (reason) => console.log('tunnel closed', reason) },
+)
+const res = await fetch(`${tunnel.httpUrl}/api/health`)   // http://127.0.0.1:<localPort>
+await tunnel.close()
+```
+
+The listener binds a loopback address only (anything else is refused), caps
+concurrent tunnelled connections (64 by default), applies SSH window flow
+control end to end, and closes itself when the connection drops.
+
 Errors:
 
 ```ts
@@ -106,7 +124,7 @@ Full API: see the exported types in `src/index.ts`. Design notes: `ARCHITECTURE.
 
 ## Not yet supported
 
-Planned, in rough order: local/remote port forwarding, SFTP, jump hosts
+Planned, in rough order: remote port forwarding, SFTP, jump hosts
 (ProxyJump), OpenSSH certificate authentication for users, stdin for `exec`,
 and an explicit opt-in for legacy algorithms (SHA-1 / CBC) for old devices.
 SSH agent forwarding is out of scope on mobile.

@@ -500,3 +500,123 @@ fn cancel_after_connected_acts_as_disconnect() {
         "no disconnect event for an app-initiated cancel"
     );
 }
+
+// ---------- local port forwarding over the C ABI ----------
+
+struct FwdCtx {
+    tx: mpsc::UnboundedSender<Ev>,
+}
+
+unsafe extern "C" fn fwd_on_opened(
+    user: *mut c_void,
+    _f: u64,
+    code: RnsshCode,
+    msg: *const c_char,
+    port: u16,
+) {
+    let ctx = unsafe { &*(user as *const FwdCtx) };
+    let m = if msg.is_null() {
+        Some(port.to_string())
+    } else {
+        Some(unsafe { cstr(msg) })
+    };
+    let _ = ctx.tx.send(Ev::Complete(code, m));
+}
+
+unsafe extern "C" fn fwd_on_closed(user: *mut c_void, _f: u64, reason: *const c_char) {
+    let ctx = unsafe { &*(user as *const FwdCtx) };
+    let r = if reason.is_null() {
+        String::new()
+    } else {
+        unsafe { cstr(reason) }
+    };
+    let _ = ctx.tx.send(Ev::Disconnected(r));
+}
+
+unsafe extern "C" fn fwd_release(user: *mut c_void) {
+    let ctx = unsafe { Box::from_raw(user as *mut FwdCtx) };
+    let _ = ctx.tx.send(Ev::Released);
+}
+
+#[test]
+fn local_forward_over_c_abi() {
+    use std::io::{Read, Write};
+    let (port, _) = start_server();
+    let http_port = {
+        let rt = rnssh_core::runtime::handle();
+        let listener = rt
+            .block_on(tokio::net::TcpListener::bind(("127.0.0.1", 0)))
+            .unwrap();
+        let p = listener.local_addr().unwrap().port();
+        rt.spawn(rnssh_testserver::serve_http(listener));
+        p
+    };
+    let (conn, mut rx) = connect(port, "test", "test", true);
+    let _ = next(&mut rx);
+    assert!(matches!(next(&mut rx), Ev::Connected(_)));
+
+    let (ftx, mut frx) = mpsc::unbounded_channel();
+    let ctx = Box::into_raw(Box::new(FwdCtx { tx: ftx.clone() }));
+    let remote = CString::new("127.0.0.1").unwrap();
+    let opts = RnsshForwardOptions {
+        bind: std::ptr::null(),
+        local_port: 0,
+        remote_host: remote.as_ptr(),
+        remote_port: http_port,
+        max_connections: 0,
+    };
+    let cbs = RnsshForwardCallbacks {
+        user: ctx as *mut c_void,
+        on_opened: Some(fwd_on_opened),
+        on_closed: Some(fwd_on_closed),
+        release: Some(fwd_release),
+    };
+    let fwd = unsafe { rnssh_forward_local(conn, &opts, &cbs) };
+    assert_ne!(fwd, 0);
+    let local_port: u16 = match next(&mut frx) {
+        Ev::Complete(0, Some(p)) => p.parse().unwrap(),
+        other => panic!("{other:?}"),
+    };
+    assert!(rnssh_forward_is_open(fwd));
+
+    // Plain HTTP through the tunnel, from a blocking std socket like an app's fetch would.
+    let mut s = std::net::TcpStream::connect(("127.0.0.1", local_port)).unwrap();
+    s.write_all(b"GET /hello HTTP/1.1\r\nHost: x\r\n\r\n")
+        .unwrap();
+    let mut resp = String::new();
+    s.read_to_string(&mut resp).unwrap();
+    assert!(resp.starts_with("HTTP/1.1 200 OK"), "{resp}");
+    assert!(resp.contains("\"path\":\"/hello\""), "{resp}");
+    assert!(resp.contains("rnssh-testserver"), "{resp}");
+
+    unsafe { rnssh_forward_close(fwd, completion(&ftx)) };
+    let mut seen = Vec::new();
+    for _ in 0..3 {
+        seen.push(next(&mut frx));
+    }
+    assert!(seen.contains(&Ev::Disconnected(String::new())), "{seen:?}");
+    assert!(seen.contains(&Ev::Released), "{seen:?}");
+    assert!(
+        seen.iter().any(|e| matches!(e, Ev::Complete(0, None))),
+        "{seen:?}"
+    );
+    assert!(!rnssh_forward_is_open(fwd));
+    assert_eq!(rnssh_forward_active_connections(fwd), 0);
+
+    // Stale connection handle → on_opened with NOT_FOUND, then release.
+    let (ftx2, mut frx2) = mpsc::unbounded_channel();
+    let ctx2 = Box::into_raw(Box::new(FwdCtx { tx: ftx2 }));
+    let cbs2 = RnsshForwardCallbacks {
+        user: ctx2 as *mut c_void,
+        on_opened: Some(fwd_on_opened),
+        on_closed: Some(fwd_on_closed),
+        release: Some(fwd_release),
+    };
+    let _ = unsafe { rnssh_forward_local(999_999, &opts, &cbs2) };
+    assert!(matches!(next(&mut frx2), Ev::Complete(2, _)));
+    assert_eq!(next(&mut frx2), Ev::Released);
+
+    let (t, mut r) = mpsc::unbounded_channel();
+    unsafe { rnssh_connection_disconnect(conn, completion(&t)) };
+    let _ = next(&mut r);
+}

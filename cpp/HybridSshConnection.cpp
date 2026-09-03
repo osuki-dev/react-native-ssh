@@ -1,5 +1,7 @@
 #include "HybridSshConnection.hpp"
+#include "HybridSshForward.hpp"
 #include "HybridSshShell.hpp"
+#include "SshForwardOptionsSpec.hpp"
 #include "RnsshBridge.hpp"
 #include "SshExecResult.hpp"
 #include "SshExecTextResult.hpp"
@@ -117,6 +119,32 @@ std::shared_ptr<Promise<SshExecTextResult>> HybridSshConnection::execText(const 
   cb.user = new ExecTextContext{promise};
   cb.on_result = &ExecTextContext::onResult;
   rnssh_connection_exec(_id, command.c_str(), cb);
+  return promise;
+}
+
+std::shared_ptr<Promise<std::shared_ptr<HybridSshLocalForwardSpec>>>
+HybridSshConnection::forwardLocal(const SshForwardOptionsSpec& options, const SshForwardHandlers& handlers) {
+  auto promise = Promise<std::shared_ptr<HybridSshLocalForwardSpec>>::create();
+  auto port = [](double v) -> uint16_t { return (v > 0 && v <= 65535) ? static_cast<uint16_t>(v) : 0; };
+  if (options.remoteHost.empty() || port(options.remotePort) == 0) {
+    promise->reject(makeError(1, "remoteHost and remotePort are required"));
+    return promise;
+  }
+  RnsshForwardOptions o;
+  o.bind = options.bindAddress.empty() ? nullptr : options.bindAddress.c_str();
+  o.local_port = port(options.localPort);
+  o.remote_host = options.remoteHost.c_str();
+  o.remote_port = port(options.remotePort);
+  o.max_connections = options.maxConnections > 0 ? static_cast<uint32_t>(options.maxConnections) : 0u;
+
+  auto* ctx = new ForwardContext{handlers, promise};
+  RnsshForwardCallbacks cbs = ForwardContext::callbacks(ctx);
+  // Rust owns `ctx` from here on; every callback carries the forward id.
+  uint64_t id = rnssh_forward_local(_id, &o, &cbs);
+  if (id == 0) {
+    delete ctx;
+    promise->reject(makeError(12, "rnssh_forward_local refused the request"));
+  }
   return promise;
 }
 

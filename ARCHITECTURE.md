@@ -35,6 +35,11 @@ is exported from the shared object.
   `Resize` / `Eof` / `Close` commands through a bounded queue, so `write`
   and `resize` are synchronous and never block. Output goes to a `ShellEvents`
   sink as owned `Vec<u8>`.
+* `forward.rs` — local port forwarding (`direct-tcpip`): a loopback
+  `TcpListener`; each accepted socket becomes one SSH channel and a single
+  `copy_bidirectional`, so SSH window flow control is the back-pressure.
+  Loopback-only bind, concurrent-connection cap, and a 1 s liveness check that
+  closes the forward when the transport is gone.
 * `hostkey.rs` — `HostKey { algorithm, fingerprint: "SHA256:…", public_key }`.
 * `keys.rs` — generation (Ed25519, ECDSA P-256/P-384, RSA 3072/4096) and
   inspection. Private key material is `Zeroizing`.
@@ -71,6 +76,8 @@ echo/resize/exit code, exec stdout/stderr/exit code, server-drop detection.
   lossy — Hermes has no `TextDecoder`), `disconnect`, read-only props.
 * `HybridSshShell` — `write` / `writeString` (sync, copy on the JS thread),
   `resize`, `sendEof`, `close`.
+* `HybridSshForward` — `localPort`, `isOpen`, `activeConnections`, `close`;
+  created by `HybridSshConnection::forwardLocal`.
 * `RnsshBridge.hpp` — error mapping, string helpers, `adoptRustBytes`
   (wraps a Rust buffer in a `NativeArrayBuffer` whose deleter calls
   `rnssh_bytes_free`), UTF-8 sanitizer.
@@ -235,5 +242,5 @@ and by automated verification; it is never published.
 
 * Terminal emulation and rendering (use your own; bytes are yours).
 * known_hosts persistence and key storage (use the platform keychain).
-* SFTP / port forwarding / agent forwarding — planned, the core already has
-  the channel plumbing; they will land as additional HybridObjects.
+* SFTP / remote port forwarding / agent forwarding — planned; local
+  forwarding landed in 0.2.0.

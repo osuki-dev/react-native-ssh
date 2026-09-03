@@ -573,6 +573,16 @@ impl Connection {
         Ok(result)
     }
 
+    /// Start a local port forward (`direct-tcpip`). See [`crate::forward`].
+    pub async fn forward_local(
+        &self,
+        options: crate::forward::ForwardOptions,
+        events: Arc<dyn crate::forward::ForwardEvents>,
+    ) -> Result<crate::forward::LocalForward> {
+        self.ensure_connected()?;
+        crate::forward::start(self.handle.clone(), options, events).await
+    }
+
     /// Politely close the transport. Idempotent.
     pub async fn disconnect(&self) {
         if self.connected.swap(false, Ordering::AcqRel) {

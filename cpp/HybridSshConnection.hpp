@@ -28,6 +28,8 @@ public:
                                                                          const SshShellHandlers& handlers) override;
   std::shared_ptr<Promise<SshExecResult>> exec(const std::string& command) override;
   std::shared_ptr<Promise<SshExecTextResult>> execText(const std::string& command) override;
+  std::shared_ptr<Promise<std::shared_ptr<HybridSshLocalForwardSpec>>> forwardLocal(const SshForwardOptionsSpec& options,
+                                                                                  const SshForwardHandlers& handlers) override;
   std::shared_ptr<Promise<void>> disconnect() override;
 
 private:

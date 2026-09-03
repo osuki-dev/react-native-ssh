@@ -29,6 +29,9 @@ import type {
   SshConnectionHandlers,
   SshConnectOptionsSpec,
   SshExecResult as SshExecResultSpec,
+  SshForwardHandlers,
+  SshForwardOptionsSpec,
+  SshLocalForward as SshLocalForwardSpec,
   SshHostKey,
   SshKeyboardInteractiveChallenge,
   SshKeyboardInteractivePrompt,
@@ -139,6 +142,23 @@ export interface SshExecRawResult {
   exitCode: number
 }
 
+export interface SshForwardOptions {
+  /** Destination host as resolved by the SSH server (often `127.0.0.1`). */
+  remoteHost: string
+  remotePort: number
+  /** Loopback port to listen on. @default 0 (pick a free port) */
+  localPort?: number
+  /** Loopback address to listen on; anything else is refused. @default '127.0.0.1' */
+  bindAddress?: string
+  /** Cap on simultaneously tunnelled TCP connections. @default 64 */
+  maxConnections?: number
+}
+
+export interface SshForwardEvents {
+  /** Fires exactly once. `reason` is undefined for an app-initiated close. */
+  onClosed?: (reason: string | undefined) => void
+}
+
 export interface GenerateKeyPairOptions {
   /** @default 'ed25519' */
   type?: SshKeyType
@@ -212,6 +232,47 @@ export class SshShell {
 }
 
 // ---------------------------------------------------------------------------
+// Local port forward
+// ---------------------------------------------------------------------------
+
+/**
+ * A loopback listener whose connections are tunnelled through the SSH
+ * session to `remoteHost:remotePort`. Point any client (fetch, WebSocket,
+ * a gateway SDK) at `http://127.0.0.1:${forward.localPort}`.
+ */
+export class SshLocalForward {
+  /** @internal */
+  constructor(private readonly forward: SshLocalForwardSpec) {}
+
+  get id(): number {
+    return this.forward.id
+  }
+
+  get localPort(): number {
+    return this.forward.localPort
+  }
+
+  get isOpen(): boolean {
+    return this.forward.isOpen
+  }
+
+  /** Tunnelled TCP connections currently alive. */
+  get activeConnections(): number {
+    return this.forward.activeConnections
+  }
+
+  /** Base URL for HTTP clients: `http://127.0.0.1:<localPort>`. */
+  get httpUrl(): string {
+    return `http://127.0.0.1:${this.localPort}`
+  }
+
+  /** Stop listening and drop tunnelled connections. Safe to call twice. */
+  close(): Promise<void> {
+    return wrapAsync(() => this.forward.close())
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Connection
 // ---------------------------------------------------------------------------
 
@@ -272,6 +333,25 @@ export class SshConnection {
   /** Like `exec`, but returns raw bytes. */
   execRaw(command: string): Promise<SshExecRawResult> {
     return wrapAsync<SshExecResultSpec>(() => this.conn.exec(command))
+  }
+
+  /**
+   * Local port forward (`direct-tcpip`). The forward closes itself when the
+   * connection drops (`onClosed` with a reason).
+   */
+  async forwardLocal(options: SshForwardOptions, events: SshForwardEvents = {}): Promise<SshLocalForward> {
+    const spec: SshForwardOptionsSpec = {
+      bindAddress: options.bindAddress ?? '127.0.0.1',
+      localPort: options.localPort ?? 0,
+      remoteHost: options.remoteHost,
+      remotePort: options.remotePort,
+      maxConnections: options.maxConnections ?? 0,
+    }
+    const handlers: SshForwardHandlers = {
+      onClosed: (reason) => events.onClosed?.(reason),
+    }
+    const forward = await wrapAsync(() => this.conn.forwardLocal(spec, handlers))
+    return new SshLocalForward(forward)
   }
 
   /** Close the transport. Safe to call twice. */

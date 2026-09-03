@@ -184,6 +184,42 @@ typedef struct RnsshShellCallbacks {
   void (*release)(void *user);
 } RnsshShellCallbacks;
 
+typedef struct RnsshForwardOptions {
+  /**
+   * Loopback address to listen on; NULL = 127.0.0.1.
+   */
+  const char *bind;
+  /**
+   * 0 = pick a free port.
+   */
+  uint16_t local_port;
+  const char *remote_host;
+  uint16_t remote_port;
+  /**
+   * 0 = default (64).
+   */
+  uint32_t max_connections;
+} RnsshForwardOptions;
+
+typedef struct RnsshForwardCallbacks {
+  void *user;
+  /**
+   * Fires exactly once: `code == 0` with the bound `local_port`, otherwise
+   * the error (and `release` follows immediately).
+   */
+  void (*on_opened)(void *user,
+                    uint64_t forward,
+                    RnsshCode code,
+                    const char *message,
+                    uint16_t local_port);
+  /**
+   * Fires exactly once after a successful open. `reason` is NULL for an
+   * app-initiated close.
+   */
+  void (*on_closed)(void *user, uint64_t forward, const char *reason);
+  void (*release)(void *user);
+} RnsshForwardCallbacks;
+
 /**
  * Output of key generation / inspection. Free with `rnssh_key_result_free`.
  */
@@ -277,6 +313,24 @@ RnsshCode rnssh_shell_resize(uint64_t shell,
  * Free a buffer handed out by `on_data`.
  */
  void rnssh_bytes_free(uint8_t *ptr, size_t len, size_t cap);
+
+/**
+ * Start a local port forward on `conn`. Returns the forward handle
+ * immediately; `on_opened` reports the bound port or the error.
+ */
+
+uint64_t rnssh_forward_local(uint64_t conn,
+                             const struct RnsshForwardOptions *options,
+                             const struct RnsshForwardCallbacks *callbacks);
+
+ bool rnssh_forward_is_open(uint64_t forward);
+
+ uint32_t rnssh_forward_active_connections(uint64_t forward);
+
+/**
+ * Close the forward. Always completes successfully; `on_closed` fires before.
+ */
+ void rnssh_forward_close(uint64_t forward, struct RnsshCompletion completion);
 
 /**
  * `key_type`: 0 ed25519, 1 ecdsa-p256, 2 ecdsa-p384, 3 rsa-3072, 4 rsa-4096.

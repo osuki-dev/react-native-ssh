@@ -32,6 +32,8 @@ pub struct TestServer;
 pub struct Handler {
     env: HashMap<String, String>,
     line: Vec<u8>,
+    /// direct-tcpip channels: their bytes belong to the tunnel, not the shell echo.
+    forwards: std::collections::HashSet<ChannelId>,
 }
 
 impl server::Server for TestServer {
@@ -41,6 +43,7 @@ impl server::Server for TestServer {
         Handler {
             env: HashMap::new(),
             line: Vec::new(),
+            forwards: std::collections::HashSet::new(),
         }
     }
     fn handle_session_error(&mut self, error: russh::Error) {
@@ -119,6 +122,47 @@ impl server::Handler for Handler {
         } else {
             Auth::reject()
         })
+    }
+
+    /// Local port forwarding, restricted to loopback targets (this is a dev
+    /// server; never turn it into an open relay).
+    async fn channel_open_direct_tcpip(
+        &mut self,
+        channel: Channel<Msg>,
+        host: &str,
+        port: u32,
+        originator: &str,
+        originator_port: u32,
+        reply: server::ChannelOpenHandle,
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        log::info!("direct-tcpip {originator}:{originator_port} -> {host}:{port}");
+        let loopback = matches!(host, "127.0.0.1" | "localhost" | "::1");
+        let Ok(port) = u16::try_from(port) else {
+            reply.reject(russh::ChannelOpenFailure::ConnectFailed).await;
+            return Ok(());
+        };
+        if !loopback {
+            reply
+                .reject(russh::ChannelOpenFailure::AdministrativelyProhibited)
+                .await;
+            return Ok(());
+        }
+        match tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
+            Ok(mut target) => {
+                self.forwards.insert(channel.id());
+                reply.accept().await;
+                tokio::spawn(async move {
+                    let mut stream = channel.into_stream();
+                    let _ = tokio::io::copy_bidirectional(&mut target, &mut stream).await;
+                });
+            }
+            Err(e) => {
+                log::info!("direct-tcpip target {host}:{port} unreachable: {e}");
+                reply.reject(russh::ChannelOpenFailure::ConnectFailed).await;
+            }
+        }
+        Ok(())
     }
 
     async fn env_request(
@@ -220,6 +264,9 @@ impl server::Handler for Handler {
         data: &[u8],
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        if self.forwards.contains(&channel) {
+            return Ok(()); // tunnel traffic is handled by the direct-tcpip pipe
+        }
         for &b in data {
             match b {
                 b'\r' | b'\n' => {
@@ -291,4 +338,33 @@ pub fn config() -> (Arc<server::Config>, String) {
         ..Default::default()
     });
     (config, fp)
+}
+
+/// A one-route HTTP server for exercising port forwarding from an app:
+/// every request gets `200 OK` with a small JSON body echoing the path.
+pub async fn serve_http(listener: TcpListener) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    loop {
+        let Ok((mut sock, peer)) = listener.accept().await else {
+            break;
+        };
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 4096];
+            let n = sock.read(&mut buf).await.unwrap_or(0);
+            let head = String::from_utf8_lossy(&buf[..n]);
+            let path = head.split_whitespace().nth(1).unwrap_or("/").to_string();
+            let body = format!(
+                "{{\"ok\":true,\"path\":\"{}\",\"via\":\"rnssh-testserver\",\"peer\":\"{}\"}}",
+                path.replace('"', ""),
+                peer
+            );
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = sock.write_all(resp.as_bytes()).await;
+            let _ = sock.shutdown().await;
+        });
+    }
 }

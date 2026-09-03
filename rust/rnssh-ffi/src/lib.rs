@@ -29,8 +29,9 @@ use std::time::Duration;
 
 use dashmap::DashMap;
 use rnssh_core::{
-    Auth, ConnectOptions, Connection, ConnectionEvents, ErrorCode, HostKey, KeyType,
-    KeyboardInteractiveChallenge, Shell, ShellEvents, ShellOptions, StreamKind, runtime,
+    Auth, ConnectOptions, Connection, ConnectionEvents, ErrorCode, ForwardEvents, ForwardOptions,
+    HostKey, KeyType, KeyboardInteractiveChallenge, LocalForward, Shell, ShellEvents, ShellOptions,
+    StreamKind, runtime,
 };
 use tokio::sync::oneshot;
 use zeroize::Zeroizing;
@@ -62,6 +63,7 @@ struct Registry {
     /// Ids whose cancel arrived while the connect task was finishing.
     cancelled: dashmap::DashSet<u64>,
     shells: DashMap<u64, Shell>,
+    forwards: DashMap<u64, LocalForward>,
 }
 
 fn registry() -> &'static Registry {
@@ -73,6 +75,7 @@ fn registry() -> &'static Registry {
         connecting: DashMap::new(),
         cancelled: dashmap::DashSet::new(),
         shells: DashMap::new(),
+        forwards: DashMap::new(),
     })
 }
 
@@ -213,6 +216,39 @@ pub struct RnsshShellCallbacks {
     pub on_closed: Option<
         unsafe extern "C" fn(user: *mut c_void, shell: u64, has_exit_code: bool, exit_code: u32),
     >,
+    pub release: Option<unsafe extern "C" fn(user: *mut c_void)>,
+}
+
+#[repr(C)]
+pub struct RnsshForwardOptions {
+    /// Loopback address to listen on; NULL = 127.0.0.1.
+    pub bind: *const c_char,
+    /// 0 = pick a free port.
+    pub local_port: u16,
+    pub remote_host: *const c_char,
+    pub remote_port: u16,
+    /// 0 = default (64).
+    pub max_connections: u32,
+}
+
+#[repr(C)]
+pub struct RnsshForwardCallbacks {
+    pub user: *mut c_void,
+    /// Fires exactly once: `code == 0` with the bound `local_port`, otherwise
+    /// the error (and `release` follows immediately).
+    pub on_opened: Option<
+        unsafe extern "C" fn(
+            user: *mut c_void,
+            forward: u64,
+            code: RnsshCode,
+            message: *const c_char,
+            local_port: u16,
+        ),
+    >,
+    /// Fires exactly once after a successful open. `reason` is NULL for an
+    /// app-initiated close.
+    pub on_closed:
+        Option<unsafe extern "C" fn(user: *mut c_void, forward: u64, reason: *const c_char)>,
     pub release: Option<unsafe extern "C" fn(user: *mut c_void)>,
 }
 
@@ -907,6 +943,131 @@ pub unsafe extern "C" fn rnssh_bytes_free(ptr: *mut u8, len: usize, cap: usize) 
     if !ptr.is_null() {
         drop(unsafe { Vec::from_raw_parts(ptr, len, cap) });
     }
+}
+
+// ---------------------------------------------------------------------------
+// Local port forwarding
+// ---------------------------------------------------------------------------
+
+struct ForwardSink {
+    id: u64,
+    cbs: RnsshForwardCallbacks,
+    _user: UserPtr,
+}
+unsafe impl Send for ForwardSink {}
+unsafe impl Sync for ForwardSink {}
+
+impl ForwardSink {
+    fn opened(&self, result: Result<u16, rnssh_core::SshError>) {
+        let Some(f) = self.cbs.on_opened else { return };
+        match result {
+            Ok(port) => unsafe { f(self.cbs.user, self.id, RNSSH_OK, std::ptr::null(), port) },
+            Err(e) => {
+                let msg = cstring(&e.message);
+                unsafe { f(self.cbs.user, self.id, e.code as u32, msg.as_ptr(), 0) }
+            }
+        }
+    }
+}
+
+impl ForwardEvents for ForwardSink {
+    fn on_closed(&self, reason: Option<String>) {
+        registry().forwards.remove(&self.id);
+        if let Some(f) = self.cbs.on_closed {
+            match reason {
+                Some(r) => {
+                    let msg = cstring(&r);
+                    unsafe { f(self.cbs.user, self.id, msg.as_ptr()) }
+                }
+                None => unsafe { f(self.cbs.user, self.id, std::ptr::null()) },
+            }
+        }
+    }
+}
+
+/// Start a local port forward on `conn`. Returns the forward handle
+/// immediately; `on_opened` reports the bound port or the error.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rnssh_forward_local(
+    conn: u64,
+    options: *const RnsshForwardOptions,
+    callbacks: *const RnsshForwardCallbacks,
+) -> u64 {
+    if options.is_null() || callbacks.is_null() {
+        return 0;
+    }
+    let o = unsafe { &*options };
+    let cbs = unsafe { std::ptr::read(callbacks) };
+    let id = next_id();
+    let opts = ForwardOptions {
+        bind: unsafe { cstr_opt(o.bind) }
+            .filter(|b| !b.is_empty())
+            .unwrap_or_else(|| "127.0.0.1".into()),
+        local_port: o.local_port,
+        remote_host: unsafe { cstr_or_empty(o.remote_host) },
+        remote_port: o.remote_port,
+        max_connections: if o.max_connections == 0 {
+            rnssh_core::forward::DEFAULT_MAX_FORWARD_CONNECTIONS
+        } else {
+            o.max_connections as usize
+        },
+    };
+    let sink = Arc::new(ForwardSink {
+        id,
+        _user: UserPtr {
+            ptr: cbs.user,
+            release: cbs.release,
+        },
+        cbs,
+    });
+    let connection = registry().connections.get(&conn).map(|e| e.conn.clone());
+    runtime::spawn(async move {
+        let result = match connection {
+            None => Err(rnssh_core::SshError::not_found("connection")),
+            Some(c) => c.forward_local(opts, sink.clone()).await,
+        };
+        match result {
+            Ok(fwd) => {
+                let port = fwd.local_port();
+                registry().forwards.insert(id, fwd);
+                sink.opened(Ok(port));
+            }
+            Err(e) => sink.opened(Err(e)),
+        }
+        // On error `sink` drops here → release(user).
+    });
+    id
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rnssh_forward_is_open(forward: u64) -> bool {
+    registry()
+        .forwards
+        .get(&forward)
+        .map(|f| f.is_open())
+        .unwrap_or(false)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rnssh_forward_active_connections(forward: u64) -> u32 {
+    registry()
+        .forwards
+        .get(&forward)
+        .map(|f| u32::try_from(f.active_connections()).unwrap_or(u32::MAX))
+        .unwrap_or(0)
+}
+
+/// Close the forward. Always completes successfully; `on_closed` fires before.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rnssh_forward_close(forward: u64, completion: RnsshCompletion) {
+    let completion = SendCompletion(completion);
+    let f = registry().forwards.get(&forward).map(|f| f.clone());
+    runtime::spawn(async move {
+        if let Some(f) = f {
+            f.close().await;
+        }
+        completion.done(Ok(()));
+    });
 }
 
 // ---------------------------------------------------------------------------

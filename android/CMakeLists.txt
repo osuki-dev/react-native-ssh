@@ -12,6 +12,7 @@ add_library(${PACKAGE_NAME} SHARED
         ../cpp/HybridSshClient.cpp
         ../cpp/HybridSshConnection.cpp
         ../cpp/HybridSshShell.cpp
+        ../cpp/HybridSshForward.cpp
 )
 
 # Prebuilt Rust static library for this ABI (scripts/build-rust-android.sh).

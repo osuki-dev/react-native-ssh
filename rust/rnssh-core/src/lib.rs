@@ -18,6 +18,7 @@
 
 pub mod connection;
 pub mod error;
+pub mod forward;
 pub mod hostkey;
 pub mod keys;
 pub mod runtime;
@@ -28,6 +29,7 @@ pub use connection::{
     KeyboardInteractivePrompt,
 };
 pub use error::{ErrorCode, SshError};
+pub use forward::{ForwardEvents, ForwardOptions, LocalForward};
 pub use hostkey::HostKey;
 pub use keys::{KeyInfo, KeyPair, KeyType};
 pub use shell::{Shell, ShellEvents, ShellOptions, StreamKind};
