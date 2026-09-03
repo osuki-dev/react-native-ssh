@@ -1,7 +1,7 @@
 {
   "name": "@osuki-dev/react-native-ssh",
-  "version": "0.1.1",
-  "description": "Native SSH client for React Native and Expo \u2014 russh (Rust) wrapped in Nitro Modules. Connections, shells, exec and keys; bring your own terminal.",
+  "version": "0.2.0",
+  "description": "Native SSH client for React Native and Expo — russh (Rust) wrapped in Nitro Modules. Connections, shells, exec and keys; bring your own terminal.",
   "main": "./lib/index.js",
   "module": "./lib/index.js",
   "types": "./lib/index.d.ts",
