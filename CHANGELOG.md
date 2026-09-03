@@ -1,5 +1,11 @@
 # @osuki-dev/react-native-ssh
 
+## 0.2.0
+
+### Minor Changes
+
+- [`4044eff`](https://github.com/osuki-dev/react-native-ssh/commit/4044eff4f4fbd2202a23f31e08bfc44e3d7b7e38) Thanks [@BANG88](https://github.com/BANG88)! - Local port forwarding: `conn.forwardLocal({ remoteHost, remotePort, localPort?, bindAddress?, maxConnections? }, { onClosed? })` returns an `SshLocalForward` (`localPort`, `httpUrl`, `isOpen`, `activeConnections`, `close()`). The listener is loopback-only, capped at 64 concurrent tunnelled connections, back-pressured by SSH window flow control, and closes itself when the connection drops. The dev test server gained `direct-tcpip` support (loopback targets) and an HTTP endpoint on `port + 1` for exercising it.
+
 ## 0.1.1
 
 ### Patch Changes
