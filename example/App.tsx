@@ -205,9 +205,8 @@ export default function App() {
     if (connection === null) return
     try {
       if (forward !== null) {
-        await forward.close()
+        await forward.close() // onClosed logs the close
         setForward(null)
-        append('forward closed')
         return
       }
       const fwd = await connection.forwardLocal(

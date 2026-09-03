@@ -39,7 +39,8 @@ cd ios && pod install
 ```
 
 No config plugin is needed; autolinking picks up the podspec and the Gradle
-project.
+project. After upgrading the package, run `pod install` again (a new version
+can add generated Nitro headers) — `expo prebuild` does that for you.
 
 ## Usage
 
