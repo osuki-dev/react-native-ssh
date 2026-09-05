@@ -19,6 +19,7 @@ namespace margelo::nitro::ssh {
       prototype.registerHybridMethod("cancelConnect", &HybridSshClientSpec::cancelConnect);
       prototype.registerHybridMethod("generateKeyPair", &HybridSshClientSpec::generateKeyPair);
       prototype.registerHybridMethod("inspectPrivateKey", &HybridSshClientSpec::inspectPrivateKey);
+      prototype.registerHybridMethod("forwardTcp", &HybridSshClientSpec::forwardTcp);
     });
   }
 

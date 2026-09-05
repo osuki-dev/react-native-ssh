@@ -1798,3 +1798,449 @@ async fn local_forward_closes_when_connection_drops() {
     assert!(reason.is_some(), "a dropped connection is not an app close");
     assert!(!fwd.is_open());
 }
+
+// ---------- plain TCP forwarding (no SSH) ----------
+
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+/// Counts `on_closed` deliveries and remembers the last reason.
+struct CountingSink {
+    closed: AtomicUsize,
+    reason: Mutex<Option<Option<String>>>,
+}
+impl ForwardEvents for CountingSink {
+    fn on_closed(&self, reason: Option<String>) {
+        self.closed.fetch_add(1, AtomicOrdering::SeqCst);
+        *self.reason.lock().unwrap() = Some(reason);
+    }
+}
+fn counting_sink() -> Arc<CountingSink> {
+    Arc::new(CountingSink {
+        closed: AtomicUsize::new(0),
+        reason: Mutex::new(None),
+    })
+}
+
+fn tcp_options(port: u16) -> ForwardOptions {
+    ForwardOptions {
+        remote_host: "127.0.0.1".into(),
+        remote_port: port,
+        ..Default::default()
+    }
+}
+
+/// Deterministic, non-repeating-ish byte pattern so a corrupted or reordered
+/// chunk cannot compare equal by accident.
+fn pattern_byte(i: usize) -> u8 {
+    ((i as u32).wrapping_mul(2_654_435_761) >> 24) as u8 ^ (i as u8)
+}
+
+async fn until<F: Fn() -> bool>(what: &str, cond: F) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !cond() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for {what}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn tcp_forward_round_trips_small_and_large_payloads() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let echo_port = start_echo_target().await;
+    let sink = counting_sink();
+    let fwd = rnssh_core::forward::forward_tcp(tcp_options(echo_port), sink.clone())
+        .await
+        .unwrap();
+    assert!(fwd.is_open());
+    assert_ne!(fwd.local_port(), 0);
+
+    // Small: a handful of bytes, one round trip.
+    let mut s = TcpStream::connect(("127.0.0.1", fwd.local_port()))
+        .await
+        .unwrap();
+    s.write_all(b"ping").await.unwrap();
+    let mut back = [0u8; 4];
+    s.read_exact(&mut back).await.unwrap();
+    assert_eq!(&back, b"ping");
+    drop(s);
+
+    // Large: 64 MiB streamed and compared byte for byte, writer and reader
+    // concurrent so neither side's buffer is the limit.
+    const TOTAL: usize = 64 * 1024 * 1024;
+    let mut s = TcpStream::connect(("127.0.0.1", fwd.local_port()))
+        .await
+        .unwrap();
+    let (mut r, mut w) = s.split();
+    let writer = async {
+        let mut chunk = vec![0u8; 256 * 1024];
+        let mut sent = 0usize;
+        while sent < TOTAL {
+            let n = chunk.len().min(TOTAL - sent);
+            for (k, b) in chunk.iter_mut().take(n).enumerate() {
+                *b = pattern_byte(sent + k);
+            }
+            w.write_all(&chunk[..n]).await.unwrap();
+            sent += n;
+        }
+        w.shutdown().await.unwrap();
+    };
+    let reader = async {
+        let mut buf = vec![0u8; 256 * 1024];
+        let mut got = 0usize;
+        while got < TOTAL {
+            let n = r.read(&mut buf).await.unwrap();
+            assert_ne!(n, 0, "EOF after {got} bytes");
+            for (k, b) in buf[..n].iter().enumerate() {
+                assert_eq!(*b, pattern_byte(got + k), "byte {} differs", got + k);
+            }
+            got += n;
+        }
+        assert_eq!(got, TOTAL);
+        // The writer's shutdown reached the echo server, which answered with EOF.
+        assert_eq!(r.read(&mut buf).await.unwrap(), 0);
+    };
+    let started = std::time::Instant::now();
+    tokio::join!(writer, reader);
+    eprintln!(
+        "tcp forward: 64 MiB round trip in {:?} ({:.0} MB/s)",
+        started.elapsed(),
+        (2 * TOTAL) as f64 / 1e6 / started.elapsed().as_secs_f64()
+    );
+    drop(s);
+
+    until("active == 0", || fwd.active_connections() == 0).await;
+    assert_eq!(sink.closed.load(AtomicOrdering::SeqCst), 0);
+    fwd.close().await;
+    assert_eq!(sink.closed.load(AtomicOrdering::SeqCst), 1);
+    assert_eq!(*sink.reason.lock().unwrap(), Some(None));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn tcp_forward_serves_fifty_concurrent_connections() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let echo_port = start_echo_target().await;
+    let sink = counting_sink();
+    let fwd = rnssh_core::forward::forward_tcp(tcp_options(echo_port), sink.clone())
+        .await
+        .unwrap();
+
+    let mut tasks = Vec::new();
+    for i in 0..50u8 {
+        let local_port = fwd.local_port();
+        tasks.push(tokio::spawn(async move {
+            let mut s = TcpStream::connect(("127.0.0.1", local_port)).await.unwrap();
+            let payload: Vec<u8> = (0..100 * 1024)
+                .map(|k| pattern_byte(k ^ usize::from(i)))
+                .collect();
+            let (mut r, mut w) = s.split();
+            let (_, back) = tokio::join!(
+                async {
+                    w.write_all(&payload).await.unwrap();
+                    w.shutdown().await.unwrap();
+                },
+                async {
+                    let mut back = Vec::with_capacity(payload.len());
+                    r.read_to_end(&mut back).await.unwrap();
+                    back
+                }
+            );
+            assert_eq!(back, payload);
+        }));
+    }
+    for t in tasks {
+        t.await.unwrap();
+    }
+    until("active == 0", || fwd.active_connections() == 0).await;
+    fwd.close().await;
+    assert_eq!(sink.closed.load(AtomicOrdering::SeqCst), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn tcp_forward_half_close_reaches_upstream_and_reverse_still_drains() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    // Upstream that reads everything until EOF, then answers with the byte
+    // count, then closes. It can only answer after the client's half-close
+    // arrived, so the reply proves the half-close was forwarded and that the
+    // reverse direction is still open after it.
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                break;
+            };
+            tokio::spawn(async move {
+                let mut sink = Vec::new();
+                let n = sock.read_to_end(&mut sink).await.unwrap();
+                sock.write_all(format!("got {n} bytes").as_bytes())
+                    .await
+                    .unwrap();
+                sock.shutdown().await.unwrap();
+            });
+        }
+    });
+    let sink = counting_sink();
+    let fwd = rnssh_core::forward::forward_tcp(tcp_options(port), sink.clone())
+        .await
+        .unwrap();
+
+    let mut s = TcpStream::connect(("127.0.0.1", fwd.local_port()))
+        .await
+        .unwrap();
+    s.write_all(&vec![7u8; 1_000_000]).await.unwrap();
+    s.shutdown().await.unwrap();
+    let mut reply = String::new();
+    s.read_to_string(&mut reply).await.unwrap();
+    assert_eq!(reply, "got 1000000 bytes");
+
+    until("active == 0", || fwd.active_connections() == 0).await;
+    fwd.close().await;
+    assert_eq!(sink.closed.load(AtomicOrdering::SeqCst), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn tcp_forward_survives_refused_and_early_closing_peers() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let sink = counting_sink();
+
+    // Upstream refuses: nothing listens on that port. The accepted client
+    // simply sees EOF; the forward stays open and counts back down.
+    let dead = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let dead_port = dead.local_addr().unwrap().port();
+    drop(dead);
+    let fwd = rnssh_core::forward::forward_tcp(tcp_options(dead_port), sink.clone())
+        .await
+        .unwrap();
+    let mut s = TcpStream::connect(("127.0.0.1", fwd.local_port()))
+        .await
+        .unwrap();
+    let mut buf = [0u8; 8];
+    assert_eq!(
+        s.read(&mut buf).await.unwrap(),
+        0,
+        "refused upstream must read as EOF"
+    );
+    until("refused: active == 0", || fwd.active_connections() == 0).await;
+    assert!(fwd.is_open());
+    fwd.close().await;
+    assert_eq!(sink.closed.load(AtomicOrdering::SeqCst), 1);
+
+    // Upstream closes first: it sends a banner and hangs up. The client gets
+    // the banner, then EOF.
+    let banner = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let banner_port = banner.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut sock, _)) = banner.accept().await else {
+                break;
+            };
+            tokio::spawn(async move {
+                let _ = sock.write_all(b"bye").await;
+                drop(sock);
+            });
+        }
+    });
+    let sink = counting_sink();
+    let fwd = rnssh_core::forward::forward_tcp(tcp_options(banner_port), sink.clone())
+        .await
+        .unwrap();
+    let mut s = TcpStream::connect(("127.0.0.1", fwd.local_port()))
+        .await
+        .unwrap();
+    let mut got = Vec::new();
+    s.read_to_end(&mut got).await.unwrap();
+    assert_eq!(got, b"bye");
+    // Still counted: a TCP forward cannot tell a peer's half-close from a
+    // full close, so the tunnel lives until the client side is gone as well.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(fwd.active_connections(), 1);
+    drop(s);
+    until("banner: active == 0", || fwd.active_connections() == 0).await;
+
+    // Client closes first, mid-stream: the upstream's echo copy ends, the
+    // tunnel task finishes, nothing is left counted.
+    let echo_port = start_echo_target().await;
+    let sink2 = counting_sink();
+    let fwd2 = rnssh_core::forward::forward_tcp(tcp_options(echo_port), sink2.clone())
+        .await
+        .unwrap();
+    let mut s = TcpStream::connect(("127.0.0.1", fwd2.local_port()))
+        .await
+        .unwrap();
+    s.write_all(&vec![1u8; 64 * 1024]).await.unwrap();
+    until("active == 1", || fwd2.active_connections() == 1).await;
+    drop(s);
+    until("client-close: active == 0", || {
+        fwd2.active_connections() == 0
+    })
+    .await;
+    assert!(fwd2.is_open());
+
+    fwd.close().await;
+    fwd2.close().await;
+    fwd2.close().await; // idempotent: the handler must not fire twice
+    assert_eq!(sink.closed.load(AtomicOrdering::SeqCst), 1);
+    assert_eq!(sink2.closed.load(AtomicOrdering::SeqCst), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn tcp_forward_close_with_live_connections_frees_everything() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let echo_port = start_echo_target().await;
+    let sink = counting_sink();
+    let weak = Arc::downgrade(&sink);
+    let fwd = rnssh_core::forward::forward_tcp(tcp_options(echo_port), sink)
+        .await
+        .unwrap();
+    let local_port = fwd.local_port();
+
+    // Three live tunnels, each mid-conversation.
+    let mut clients = Vec::new();
+    for _ in 0..3 {
+        let mut s = TcpStream::connect(("127.0.0.1", local_port)).await.unwrap();
+        s.write_all(b"hold").await.unwrap();
+        let mut back = [0u8; 4];
+        s.read_exact(&mut back).await.unwrap();
+        clients.push(s);
+    }
+    assert_eq!(fwd.active_connections(), 3);
+
+    let started = std::time::Instant::now();
+    fwd.close().await;
+    let close_took = started.elapsed();
+    assert!(!fwd.is_open());
+    assert!(
+        close_took < Duration::from_secs(2),
+        "close took {close_took:?}"
+    );
+
+    // The port refuses new connections immediately after close resolved.
+    let refused = tokio::time::timeout(
+        Duration::from_secs(2),
+        TcpStream::connect(("127.0.0.1", local_port)),
+    )
+    .await
+    .expect("connect must not hang");
+    assert!(refused.is_err(), "listener still accepting after close");
+
+    // Every live tunnel was torn down: the clients read EOF (or a reset)
+    // instead of hanging, which is what proves the tunnel tasks are gone.
+    for mut s in clients {
+        let mut buf = [0u8; 16];
+        let r = tokio::time::timeout(Duration::from_secs(2), s.read(&mut buf))
+            .await
+            .expect("tunnel not torn down within 2 s");
+        assert!(matches!(r, Ok(0) | Err(_)), "{r:?}");
+    }
+    assert_eq!(fwd.active_connections(), 0);
+
+    // The accept loop dropped its handler: the only strong reference was the
+    // loop's, so the weak one no longer upgrades once the task has finished.
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while weak.upgrade().is_some() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "accept loop leaked its events sink"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn tcp_forward_refuses_bad_options() {
+    let sink = counting_sink();
+    let err = rnssh_core::forward::forward_tcp(
+        ForwardOptions {
+            bind: "0.0.0.0".into(),
+            ..tcp_options(80)
+        },
+        sink.clone(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.code, rnssh_core::ErrorCode::InvalidArgument);
+
+    let err = rnssh_core::forward::forward_tcp(
+        ForwardOptions {
+            bind: "not an ip".into(),
+            ..tcp_options(80)
+        },
+        sink.clone(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.code, rnssh_core::ErrorCode::InvalidArgument);
+
+    let err = rnssh_core::forward::forward_tcp(
+        ForwardOptions {
+            remote_host: "  ".into(),
+            ..tcp_options(80)
+        },
+        sink.clone(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.code, rnssh_core::ErrorCode::InvalidArgument);
+
+    let err = rnssh_core::forward::forward_tcp(tcp_options(0), sink.clone())
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, rnssh_core::ErrorCode::InvalidArgument);
+
+    // A busy local port is an IO error, not a panic.
+    let taken = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let err = rnssh_core::forward::forward_tcp(
+        ForwardOptions {
+            local_port: taken.local_addr().unwrap().port(),
+            ..tcp_options(80)
+        },
+        sink.clone(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.code, rnssh_core::ErrorCode::Io);
+
+    // None of the failed starts may have fired the handler.
+    assert_eq!(sink.closed.load(AtomicOrdering::SeqCst), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn tcp_forward_caps_concurrent_connections() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let echo_port = start_echo_target().await;
+    let sink = counting_sink();
+    let fwd = rnssh_core::forward::forward_tcp(
+        ForwardOptions {
+            max_connections: 2,
+            ..tcp_options(echo_port)
+        },
+        sink,
+    )
+    .await
+    .unwrap();
+    let mut a = TcpStream::connect(("127.0.0.1", fwd.local_port()))
+        .await
+        .unwrap();
+    let mut b = TcpStream::connect(("127.0.0.1", fwd.local_port()))
+        .await
+        .unwrap();
+    for s in [&mut a, &mut b] {
+        s.write_all(b"x").await.unwrap();
+        let mut back = [0u8; 1];
+        s.read_exact(&mut back).await.unwrap();
+    }
+    assert_eq!(fwd.active_connections(), 2);
+    // The third is accepted and dropped: EOF, and the count does not move.
+    let mut c = TcpStream::connect(("127.0.0.1", fwd.local_port()))
+        .await
+        .unwrap();
+    let mut buf = [0u8; 1];
+    assert_eq!(c.read(&mut buf).await.unwrap(), 0);
+    assert_eq!(fwd.active_connections(), 2);
+    drop(a);
+    until("active == 1", || fwd.active_connections() == 1).await;
+    fwd.close().await;
+}

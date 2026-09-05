@@ -985,6 +985,22 @@ impl ForwardEvents for ForwardSink {
     }
 }
 
+unsafe fn forward_options(o: &RnsshForwardOptions) -> ForwardOptions {
+    ForwardOptions {
+        bind: unsafe { cstr_opt(o.bind) }
+            .filter(|b| !b.is_empty())
+            .unwrap_or_else(|| "127.0.0.1".into()),
+        local_port: o.local_port,
+        remote_host: unsafe { cstr_or_empty(o.remote_host) },
+        remote_port: o.remote_port,
+        max_connections: if o.max_connections == 0 {
+            rnssh_core::forward::DEFAULT_MAX_FORWARD_CONNECTIONS
+        } else {
+            o.max_connections as usize
+        },
+    }
+}
+
 /// Start a local port forward on `conn`. Returns the forward handle
 /// immediately; `on_opened` reports the bound port or the error.
 #[unsafe(no_mangle)]
@@ -999,19 +1015,7 @@ pub unsafe extern "C" fn rnssh_forward_local(
     let o = unsafe { &*options };
     let cbs = unsafe { std::ptr::read(callbacks) };
     let id = next_id();
-    let opts = ForwardOptions {
-        bind: unsafe { cstr_opt(o.bind) }
-            .filter(|b| !b.is_empty())
-            .unwrap_or_else(|| "127.0.0.1".into()),
-        local_port: o.local_port,
-        remote_host: unsafe { cstr_or_empty(o.remote_host) },
-        remote_port: o.remote_port,
-        max_connections: if o.max_connections == 0 {
-            rnssh_core::forward::DEFAULT_MAX_FORWARD_CONNECTIONS
-        } else {
-            o.max_connections as usize
-        },
-    };
+    let opts = unsafe { forward_options(o) };
     let sink = Arc::new(ForwardSink {
         id,
         _user: UserPtr {
@@ -1027,6 +1031,45 @@ pub unsafe extern "C" fn rnssh_forward_local(
             Some(c) => c.forward_local(opts, sink.clone()).await,
         };
         match result {
+            Ok(fwd) => {
+                let port = fwd.local_port();
+                registry().forwards.insert(id, fwd);
+                sink.opened(Ok(port));
+            }
+            Err(e) => sink.opened(Err(e)),
+        }
+        // On error `sink` drops here → release(user).
+    });
+    id
+}
+
+/// Start a loopback listener piped to `remote_host:remote_port` over plain
+/// TCP — no SSH connection involved. Same options, callbacks and handle
+/// functions as [`rnssh_forward_local`]; the destination is resolved by this
+/// device. Returns the forward handle immediately; `on_opened` reports the
+/// bound port or the error.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rnssh_forward_tcp(
+    options: *const RnsshForwardOptions,
+    callbacks: *const RnsshForwardCallbacks,
+) -> u64 {
+    if options.is_null() || callbacks.is_null() {
+        return 0;
+    }
+    let o = unsafe { &*options };
+    let cbs = unsafe { std::ptr::read(callbacks) };
+    let id = next_id();
+    let opts = unsafe { forward_options(o) };
+    let sink = Arc::new(ForwardSink {
+        id,
+        _user: UserPtr {
+            ptr: cbs.user,
+            release: cbs.release,
+        },
+        cbs,
+    });
+    runtime::spawn(async move {
+        match rnssh_core::forward::forward_tcp(opts, sink.clone()).await {
             Ok(fwd) => {
                 let port = fwd.local_port();
                 registry().forwards.insert(id, fwd);

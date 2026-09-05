@@ -620,3 +620,90 @@ fn local_forward_over_c_abi() {
     unsafe { rnssh_connection_disconnect(conn, completion(&t)) };
     let _ = next(&mut r);
 }
+
+// ---------- plain TCP forwarding over the C ABI ----------
+
+#[test]
+fn tcp_forward_over_c_abi() {
+    use std::io::{Read, Write};
+    let http_port = {
+        let rt = rnssh_core::runtime::handle();
+        let listener = rt
+            .block_on(tokio::net::TcpListener::bind(("127.0.0.1", 0)))
+            .unwrap();
+        let p = listener.local_addr().unwrap().port();
+        rt.spawn(rnssh_testserver::serve_http(listener));
+        p
+    };
+
+    let (ftx, mut frx) = mpsc::unbounded_channel();
+    let ctx = Box::into_raw(Box::new(FwdCtx { tx: ftx.clone() }));
+    let remote = CString::new("127.0.0.1").unwrap();
+    let opts = RnsshForwardOptions {
+        bind: std::ptr::null(),
+        local_port: 0,
+        remote_host: remote.as_ptr(),
+        remote_port: http_port,
+        max_connections: 0,
+    };
+    let cbs = RnsshForwardCallbacks {
+        user: ctx as *mut c_void,
+        on_opened: Some(fwd_on_opened),
+        on_closed: Some(fwd_on_closed),
+        release: Some(fwd_release),
+    };
+    let fwd = unsafe { rnssh_forward_tcp(&opts, &cbs) };
+    assert_ne!(fwd, 0);
+    let local_port: u16 = match next(&mut frx) {
+        Ev::Complete(0, Some(p)) => p.parse().unwrap(),
+        other => panic!("{other:?}"),
+    };
+    assert!(rnssh_forward_is_open(fwd));
+
+    // Plain HTTP through the forward, from a blocking std socket like a web view would.
+    let mut s = std::net::TcpStream::connect(("127.0.0.1", local_port)).unwrap();
+    s.write_all(b"GET /hello HTTP/1.1\r\nHost: x\r\n\r\n")
+        .unwrap();
+    let mut resp = String::new();
+    s.read_to_string(&mut resp).unwrap();
+    assert!(resp.starts_with("HTTP/1.1 200 OK"), "{resp}");
+    assert!(resp.contains("\"path\":\"/hello\""), "{resp}");
+    drop(s);
+
+    unsafe { rnssh_forward_close(fwd, completion(&ftx)) };
+    let mut seen = Vec::new();
+    for _ in 0..3 {
+        seen.push(next(&mut frx));
+    }
+    assert!(seen.contains(&Ev::Disconnected(String::new())), "{seen:?}");
+    assert!(seen.contains(&Ev::Released), "{seen:?}");
+    assert!(
+        seen.iter().any(|e| matches!(e, Ev::Complete(0, None))),
+        "{seen:?}"
+    );
+    assert!(!rnssh_forward_is_open(fwd));
+    assert_eq!(rnssh_forward_active_connections(fwd), 0);
+    assert!(std::net::TcpStream::connect(("127.0.0.1", local_port)).is_err());
+
+    // Bad options → on_opened with INVALID_ARGUMENT, then release; no on_closed.
+    let (ftx2, mut frx2) = mpsc::unbounded_channel();
+    let ctx2 = Box::into_raw(Box::new(FwdCtx { tx: ftx2 }));
+    let bind = CString::new("0.0.0.0").unwrap();
+    let bad = RnsshForwardOptions {
+        bind: bind.as_ptr(),
+        ..opts
+    };
+    let cbs2 = RnsshForwardCallbacks {
+        user: ctx2 as *mut c_void,
+        on_opened: Some(fwd_on_opened),
+        on_closed: Some(fwd_on_closed),
+        release: Some(fwd_release),
+    };
+    let _ = unsafe { rnssh_forward_tcp(&bad, &cbs2) };
+    assert!(matches!(next(&mut frx2), Ev::Complete(1, _)));
+    assert_eq!(next(&mut frx2), Ev::Released);
+
+    // NULL pointers are refused outright.
+    assert_eq!(unsafe { rnssh_forward_tcp(std::ptr::null(), &cbs2) }, 0);
+    assert_eq!(unsafe { rnssh_forward_tcp(&opts, std::ptr::null()) }, 0);
+}

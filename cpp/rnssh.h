@@ -323,6 +323,17 @@ uint64_t rnssh_forward_local(uint64_t conn,
                              const struct RnsshForwardOptions *options,
                              const struct RnsshForwardCallbacks *callbacks);
 
+/**
+ * Start a loopback listener piped to `remote_host:remote_port` over plain
+ * TCP — no SSH connection involved. Same options, callbacks and handle
+ * functions as [`rnssh_forward_local`]; the destination is resolved by this
+ * device. Returns the forward handle immediately; `on_opened` reports the
+ * bound port or the error.
+ */
+
+uint64_t rnssh_forward_tcp(const struct RnsshForwardOptions *options,
+                           const struct RnsshForwardCallbacks *callbacks);
+
  bool rnssh_forward_is_open(uint64_t forward);
 
  uint32_t rnssh_forward_active_connections(uint64_t forward);

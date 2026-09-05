@@ -35,11 +35,16 @@ is exported from the shared object.
   `Resize` / `Eof` / `Close` commands through a bounded queue, so `write`
   and `resize` are synchronous and never block. Output goes to a `ShellEvents`
   sink as owned `Vec<u8>`.
-* `forward.rs` — local port forwarding (`direct-tcpip`): a loopback
-  `TcpListener`; each accepted socket becomes one SSH channel and a single
-  `copy_bidirectional`, so SSH window flow control is the back-pressure.
-  Loopback-only bind, concurrent-connection cap, and a 1 s liveness check that
-  closes the forward when the transport is gone.
+* `forward.rs` — local port forwarding: a loopback `TcpListener` whose
+  accepted sockets are each piped by a single `copy_bidirectional` into an
+  *upstream*. Two upstreams implement one small trait: an SSH `direct-tcpip`
+  channel (`Connection::forward_local`, back-pressured by SSH window flow
+  control, with a 1 s liveness check that closes the forward when the
+  transport is gone) and a plain `TcpStream` to `host:port` (`forward_tcp`,
+  no SSH at all — it only gives an already-reachable service a loopback
+  address, which is what makes a web view a secure context). Listener,
+  loopback-only bind, connection cap (counted by a drop guard, so an aborted
+  tunnel is never left counted) and `on_closed` lifecycle are shared.
 * `hostkey.rs` — `HostKey { algorithm, fingerprint: "SHA256:…", public_key }`.
 * `keys.rs` — generation (Ed25519, ECDSA P-256/P-384, RSA 3072/4096) and
   inspection. Private key material is `Zeroizing`.
@@ -71,13 +76,14 @@ echo/resize/exit code, exec stdout/stderr/exit code, server-drop detection.
 ### `cpp/` — Nitro HybridObjects
 
 * `HybridSshClient` — `connect`, `generateKeyPair` (runs on Nitro's thread
-  pool), `inspectPrivateKey`.
+  pool), `inspectPrivateKey`, `forwardTcp` (same `HybridSshForward` handle
+  and Rust registry as an SSH forward, no connection).
 * `HybridSshConnection` — `openShell`, `exec` (raw bytes), `execText` (UTF-8,
   lossy — Hermes has no `TextDecoder`), `disconnect`, read-only props.
 * `HybridSshShell` — `write` / `writeString` (sync, copy on the JS thread),
   `resize`, `sendEof`, `close`.
 * `HybridSshForward` — `localPort`, `isOpen`, `activeConnections`, `close`;
-  created by `HybridSshConnection::forwardLocal`.
+  created by `HybridSshConnection::forwardLocal` and `HybridSshClient::forwardTcp`.
 * `RnsshBridge.hpp` — error mapping, string helpers, `adoptRustBytes`
   (wraps a Rust buffer in a `NativeArrayBuffer` whose deleter calls
   `rnssh_bytes_free`), UTF-8 sanitizer.

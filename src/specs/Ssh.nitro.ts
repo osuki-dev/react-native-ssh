@@ -126,6 +126,25 @@ export interface SshForwardOptionsSpec {
   maxConnections: number
 }
 
+/**
+ * Same shape as `SshForwardOptionsSpec`, but the destination is resolved by
+ * this device over plain TCP: no SSH connection is involved. Exists so a web
+ * view can reach an already-reachable service at a loopback address, where a
+ * plain-http page is a secure context (WebCodecs and friends) and elsewhere
+ * is not.
+ */
+export interface SshTcpForwardOptionsSpec {
+  /** Loopback address to listen on. Anything else is refused. */
+  bindAddress: string
+  /** 0 = pick a free port. */
+  localPort: number
+  /** Destination as resolved by this device. */
+  remoteHost: string
+  remotePort: number
+  /** 0 = default (64). */
+  maxConnections: number
+}
+
 export interface SshForwardHandlers {
   /** Exactly once. `reason` is undefined for an app-initiated close. */
   onClosed: (reason?: string) => void
@@ -210,4 +229,10 @@ export interface SshClient extends HybridObject<{ ios: 'c++'; android: 'c++' }> 
   generateKeyPair(type: SshKeyType, comment?: string, passphrase?: string): Promise<SshKeyPair>
   /** Parse (and decrypt) a private key to validate it and show its public half. */
   inspectPrivateKey(privateKey: string, passphrase?: string): SshKeyInfo
+  /**
+   * Loopback listener piped over plain TCP to `remoteHost:remotePort`, with no
+   * SSH involved. Same handle, caps and lifecycle as `SshConnection.forwardLocal`;
+   * lives until `close()` or the process ends.
+   */
+  forwardTcp(options: SshTcpForwardOptionsSpec, handlers: SshForwardHandlers): Promise<SshLocalForward>
 }
