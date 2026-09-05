@@ -15,7 +15,9 @@ terminal**.
 - Typed errors (`SshError.code`: `AUTH_FAILED`, `HOST_KEY_REJECTED`, `TIMEOUT`, …).
 - Local port forwarding (`direct-tcpip`): a loopback listener tunnelled through
   the session, so an HTTP/WebSocket client on the phone can reach a service
-  bound to the server's loopback without exposing it.
+  bound to the server's loopback without exposing it. The same listener over
+  plain TCP (`forwardTcp`) gives an already-reachable service a `127.0.0.1`
+  address, which is what makes a web view a secure context.
 - Ed25519 / ECDSA / RSA key generation and inspection (Ed25519 by default;
   RSA user keys are supported for legacy servers but not recommended, see
   Security notes).
@@ -96,6 +98,22 @@ await tunnel.close()
 The listener binds a loopback address only (anything else is refused), caps
 concurrent tunnelled connections (64 by default), applies SSH window flow
 control end to end, and closes itself when the connection drops.
+
+The same listener is available without SSH, piped over plain TCP to a host
+this device can already reach. It exists for one reason: a web view is a
+secure context only on `127.0.0.1` / `localhost`, so a plain-http page
+served from a LAN or tailnet address has no WebCodecs, `crypto.subtle` and
+the like. `forwardTcp` gives such a page a loopback address and nothing else
+— it neither encrypts nor authenticates, so use it only for services the
+network already vouches for:
+
+```ts
+import { forwardTcp } from '@osuki-dev/react-native-ssh'
+
+const loop = await forwardTcp({ remoteHost: '100.99.165.54', remotePort: 8801 })
+const uri = `${loop.httpUrl}/`                      // http://127.0.0.1:<localPort>/
+await loop.close()
+```
 
 Errors:
 

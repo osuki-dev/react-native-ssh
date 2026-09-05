@@ -1,16 +1,23 @@
-//! Local port forwarding (`direct-tcpip`): a loopback TCP listener whose
-//! accepted connections are tunnelled through the SSH transport to
-//! `remote_host:remote_port` as seen from the server.
+//! Local port forwarding: a loopback TCP listener whose accepted connections
+//! are piped to an *upstream* — either an SSH `direct-tcpip` channel
+//! (`Connection::forward_local`) or a plain TCP connection to `host:port`
+//! (`forward_tcp`).
 //!
-//! This is what lets an app keep talking plain HTTP/WebSocket to a service on
-//! the server (e.g. a gateway bound to `127.0.0.1` there) without exposing it:
-//! point the client at `http://127.0.0.1:<local_port>` and the bytes ride the
-//! authenticated, encrypted SSH session.
+//! The SSH flavour is what lets an app keep talking plain HTTP/WebSocket to a
+//! service on the server (e.g. a gateway bound to `127.0.0.1` there) without
+//! exposing it: point the client at `http://127.0.0.1:<local_port>` and the
+//! bytes ride the authenticated, encrypted SSH session.
 //!
-//! Safety rails: the listener only ever binds a loopback address, the number
-//! of concurrent tunnelled connections is capped, each connection is a single
-//! `copy_bidirectional` (so SSH window flow control applies end to end), and
-//! the forward closes itself when the SSH connection goes away.
+//! The TCP flavour involves no SSH at all. It exists for the case where a
+//! service is already reachable (a tailnet host, say) but must be *addressed*
+//! as loopback: a web view is only a secure context on `127.0.0.1` /
+//! `localhost`, and APIs such as WebCodecs are missing on a plain-http page
+//! served from any other address. The forward adds nothing but the address.
+//!
+//! Safety rails, shared by both: the listener only ever binds a loopback
+//! address, the number of concurrent tunnelled connections is capped, each
+//! connection is a single `copy_bidirectional` (so back-pressure applies end
+//! to end), and an SSH forward closes itself when its connection goes away.
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -18,6 +25,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use russh::client::{Handle, Handler as ClientHandler};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Notify;
 
@@ -26,6 +34,10 @@ use crate::runtime;
 
 /// Default cap on simultaneously tunnelled TCP connections per forward.
 pub const DEFAULT_MAX_FORWARD_CONNECTIONS: usize = 64;
+
+/// How long a TCP forward waits for the upstream `connect` before giving up on
+/// one accepted connection (the listener itself stays up).
+pub const TCP_UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Implemented by the FFI layer. `on_closed` fires exactly once, after the
 /// listener stopped and the last tunnelled connection finished.
@@ -40,7 +52,8 @@ pub struct ForwardOptions {
     pub bind: String,
     /// `0` picks a free port; the chosen port is in [`LocalForward::local_port`].
     pub local_port: u16,
-    /// Destination as resolved *by the server*.
+    /// Destination: as resolved *by the server* for an SSH forward, as
+    /// resolved by this device for a TCP forward.
     pub remote_host: String,
     pub remote_port: u16,
     pub max_connections: usize,
@@ -104,8 +117,120 @@ impl std::fmt::Debug for LocalForward {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Upstreams
+// ---------------------------------------------------------------------------
+
+/// Where an accepted loopback connection is piped to. One implementation per
+/// transport; the listener, accounting and lifecycle above are shared.
+pub(crate) trait Upstream: Send + Sync + 'static {
+    type Stream: AsyncRead + AsyncWrite + Unpin + Send;
+
+    /// Open one upstream stream for the connection accepted from `peer`.
+    /// An error drops that one connection; the listener stays up.
+    fn open(
+        &self,
+        peer: SocketAddr,
+    ) -> impl Future<Output = std::result::Result<Self::Stream, String>> + Send;
+
+    /// Polled once a second. An `Err` closes the whole forward with that
+    /// reason — used by the SSH flavour when its transport is gone.
+    fn liveness(&self) -> std::result::Result<(), String> {
+        Ok(())
+    }
+}
+
+/// SSH `direct-tcpip`: the destination is resolved by the server.
+struct SshUpstream<H: ClientHandler + 'static> {
+    handle: Arc<Handle<H>>,
+    remote_host: String,
+    remote_port: u16,
+}
+
+impl<H: ClientHandler + 'static> Upstream for SshUpstream<H> {
+    type Stream = russh::ChannelStream<russh::client::Msg>;
+
+    async fn open(&self, peer: SocketAddr) -> std::result::Result<Self::Stream, String> {
+        self.handle
+            .channel_open_direct_tcpip(
+                self.remote_host.as_str(),
+                u32::from(self.remote_port),
+                peer.ip().to_string(),
+                u32::from(peer.port()),
+            )
+            .await
+            .map(|channel| channel.into_stream())
+            .map_err(|e| {
+                format!(
+                    "forward to {}:{} refused: {e}",
+                    self.remote_host, self.remote_port
+                )
+            })
+    }
+
+    fn liveness(&self) -> std::result::Result<(), String> {
+        if self.handle.is_closed() {
+            Err("ssh connection closed".into())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// Plain TCP: the destination is resolved by this device. No SSH involved.
+struct TcpUpstream {
+    host: String,
+    port: u16,
+}
+
+impl Upstream for TcpUpstream {
+    type Stream = TcpStream;
+
+    async fn open(&self, _peer: SocketAddr) -> std::result::Result<Self::Stream, String> {
+        let connect = TcpStream::connect((self.host.as_str(), self.port));
+        let stream = tokio::time::timeout(TCP_UPSTREAM_CONNECT_TIMEOUT, connect)
+            .await
+            .map_err(|_| format!("connect to {}:{} timed out", self.host, self.port))?
+            .map_err(|e| format!("connect to {}:{} failed: {e}", self.host, self.port))?;
+        let _ = stream.set_nodelay(true);
+        Ok(stream)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Starting
+// ---------------------------------------------------------------------------
+
+/// SSH local forward on an established connection (`Connection::forward_local`).
 pub(crate) async fn start<H: ClientHandler + 'static>(
     handle: Arc<Handle<H>>,
+    options: ForwardOptions,
+    events: Arc<dyn ForwardEvents>,
+) -> Result<LocalForward> {
+    let upstream = SshUpstream {
+        handle,
+        remote_host: options.remote_host.clone(),
+        remote_port: options.remote_port,
+    };
+    start_with(upstream, options, events).await
+}
+
+/// Loopback listener piped to `remote_host:remote_port` over plain TCP.
+/// Independent of any SSH connection; lives until [`LocalForward::close`] or
+/// the process ends.
+pub async fn forward_tcp(
+    options: ForwardOptions,
+    events: Arc<dyn ForwardEvents>,
+) -> Result<LocalForward> {
+    let upstream = TcpUpstream {
+        host: options.remote_host.clone(),
+        port: options.remote_port,
+    };
+    start_with(upstream, options, events).await
+}
+
+async fn start_with<U: Upstream>(
+    upstream: U,
     options: ForwardOptions,
     events: Arc<dyn ForwardEvents>,
 ) -> Result<LocalForward> {
@@ -146,14 +271,21 @@ pub(crate) async fn start<H: ClientHandler + 'static>(
     };
 
     runtime::spawn(accept_loop(
-        handle, listener, options, events, open, active, shutdown, finished,
+        Arc::new(upstream),
+        listener,
+        options,
+        events,
+        open,
+        active,
+        shutdown,
+        finished,
     ));
     Ok(forward)
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn accept_loop<H: ClientHandler + 'static>(
-    handle: Arc<Handle<H>>,
+async fn accept_loop<U: Upstream>(
+    upstream: Arc<U>,
     listener: TcpListener,
     options: ForwardOptions,
     events: Arc<dyn ForwardEvents>,
@@ -171,8 +303,8 @@ async fn accept_loop<H: ClientHandler + 'static>(
             biased;
             _ = shutdown.notified() => break,
             _ = liveness.tick() => {
-                if handle.is_closed() {
-                    reason = Some("ssh connection closed".into());
+                if let Err(why) = upstream.liveness() {
+                    reason = Some(why);
                     break;
                 }
             }
@@ -184,14 +316,15 @@ async fn accept_loop<H: ClientHandler + 'static>(
                             drop(socket);
                             continue;
                         }
-                        active.fetch_add(1, Ordering::AcqRel);
-                        let active = active.clone();
-                        let handle = handle.clone();
-                        let host = options.remote_host.clone();
-                        let port = options.remote_port;
+                        // Counted down by a guard, not after the await: an
+                        // aborted tunnel (close() with live connections) must
+                        // leave the count at zero too.
+                        let counted = Counted::new(&active);
+                        let upstream = upstream.clone();
+                        let target = format!("{}:{}", options.remote_host, options.remote_port);
                         tunnels.spawn(async move {
-                            tunnel(handle, socket, peer, host, port).await;
-                            active.fetch_sub(1, Ordering::AcqRel);
+                            let _counted = counted;
+                            tunnel(upstream, socket, peer, target).await;
                         });
                     }
                     Err(e) => {
@@ -211,32 +344,38 @@ async fn accept_loop<H: ClientHandler + 'static>(
     finished.notify_one();
 }
 
-async fn tunnel<H: ClientHandler + 'static>(
-    handle: Arc<Handle<H>>,
+/// One live tunnel in `active`, released on drop (including task abort).
+struct Counted(Arc<AtomicUsize>);
+
+impl Counted {
+    fn new(active: &Arc<AtomicUsize>) -> Self {
+        active.fetch_add(1, Ordering::AcqRel);
+        Self(active.clone())
+    }
+}
+
+impl Drop for Counted {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+async fn tunnel<U: Upstream>(
+    upstream: Arc<U>,
     mut socket: TcpStream,
     peer: SocketAddr,
-    remote_host: String,
-    remote_port: u16,
+    target: String,
 ) {
-    let channel = match handle
-        .channel_open_direct_tcpip(
-            remote_host.as_str(),
-            u32::from(remote_port),
-            peer.ip().to_string(),
-            u32::from(peer.port()),
-        )
-        .await
-    {
-        Ok(c) => c,
-        Err(e) => {
-            log::warn!("forward to {remote_host}:{remote_port} refused: {e}");
+    let mut stream = match upstream.open(peer).await {
+        Ok(s) => s,
+        Err(why) => {
+            log::warn!("{why}");
             return;
         }
     };
     let _ = socket.set_nodelay(true);
-    let mut stream = channel.into_stream();
     if let Err(e) = tokio::io::copy_bidirectional(&mut socket, &mut stream).await {
-        log::debug!("tunnel {peer} → {remote_host}:{remote_port} ended: {e}");
+        log::debug!("tunnel {peer} → {target} ended: {e}");
     }
 }
 

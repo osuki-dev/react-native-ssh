@@ -41,6 +41,7 @@ import type {
   SshShell as SshShellSpec,
   SshShellHandlers,
   SshShellOptionsSpec,
+  SshTcpForwardOptionsSpec,
 } from './specs/Ssh.nitro'
 
 export { SshError }
@@ -154,6 +155,18 @@ export interface SshForwardOptions {
   maxConnections?: number
 }
 
+export interface SshTcpForwardOptions {
+  /** Destination host as resolved by this device (an IP or a name it can resolve). */
+  remoteHost: string
+  remotePort: number
+  /** Loopback port to listen on. @default 0 (pick a free port) */
+  localPort?: number
+  /** Loopback address to listen on; anything else is refused. @default '127.0.0.1' */
+  bindAddress?: string
+  /** Cap on simultaneously piped TCP connections. @default 64 */
+  maxConnections?: number
+}
+
 export interface SshForwardEvents {
   /** Fires exactly once. `reason` is undefined for an app-initiated close. */
   onClosed?: (reason: string | undefined) => void
@@ -236,9 +249,10 @@ export class SshShell {
 // ---------------------------------------------------------------------------
 
 /**
- * A loopback listener whose connections are tunnelled through the SSH
- * session to `remoteHost:remotePort`. Point any client (fetch, WebSocket,
- * a gateway SDK) at `http://127.0.0.1:${forward.localPort}`.
+ * A loopback listener whose connections are piped to `remoteHost:remotePort`
+ * — through the SSH session for `conn.forwardLocal`, over plain TCP for
+ * `forwardTcp`. Point any client (fetch, WebSocket, a web view, a gateway
+ * SDK) at `http://127.0.0.1:${forward.localPort}`.
  */
 export class SshLocalForward {
   /** @internal */
@@ -437,6 +451,44 @@ export async function connect(options: SshConnectOptions): Promise<SshConnection
   } finally {
     cleanup?.()
   }
+}
+
+/**
+ * Loopback listener piped over plain TCP to `remoteHost:remotePort`, with no
+ * SSH involved. For services this device can already reach but which must be
+ * *addressed* as loopback: a web view is a secure context only on
+ * `127.0.0.1` / `localhost`, so a plain-http page served from any other
+ * address has no WebCodecs, no crypto.subtle and so on. The forward adds the
+ * address and nothing else — it neither encrypts nor authenticates.
+ *
+ * Same handle, connection cap and lifecycle as `conn.forwardLocal`; the
+ * listener lives until `close()` or the process ends. The `remoteHost` is
+ * resolved by this device, not by any server.
+ */
+export async function forwardTcp(options: SshTcpForwardOptions, events: SshForwardEvents = {}): Promise<SshLocalForward> {
+  const { remoteHost, remotePort } = options
+  if (typeof remoteHost !== 'string' || remoteHost.trim() === '') {
+    throw new SshError('INVALID_ARGUMENT', 'remoteHost must not be empty')
+  }
+  if (!Number.isInteger(remotePort) || remotePort < 1 || remotePort > 65535) {
+    throw new SshError('INVALID_ARGUMENT', 'remotePort must be an integer in 1..65535')
+  }
+  const localPort = options.localPort ?? 0
+  if (!Number.isInteger(localPort) || localPort < 0 || localPort > 65535) {
+    throw new SshError('INVALID_ARGUMENT', 'localPort must be an integer in 0..65535')
+  }
+  const spec: SshTcpForwardOptionsSpec = {
+    bindAddress: options.bindAddress ?? '127.0.0.1',
+    localPort,
+    remoteHost: remoteHost.trim(),
+    remotePort,
+    maxConnections: options.maxConnections ?? 0,
+  }
+  const handlers: SshForwardHandlers = {
+    onClosed: (reason) => events.onClosed?.(reason),
+  }
+  const forward = await wrapAsync(() => native().forwardTcp(spec, handlers))
+  return new SshLocalForward(forward)
 }
 
 /** Generate a new key pair. Ed25519 by default; RSA runs off the JS thread but still takes a while. */

@@ -21,6 +21,8 @@ public:
   std::shared_ptr<Promise<SshKeyPair>> generateKeyPair(SshKeyType type, const std::optional<std::string>& comment,
                                                        const std::optional<std::string>& passphrase) override;
   SshKeyInfo inspectPrivateKey(const std::string& privateKey, const std::optional<std::string>& passphrase) override;
+  std::shared_ptr<Promise<std::shared_ptr<HybridSshLocalForwardSpec>>> forwardTcp(const SshTcpForwardOptionsSpec& options,
+                                                                                const SshForwardHandlers& handlers) override;
 };
 
 } // namespace margelo::nitro::ssh

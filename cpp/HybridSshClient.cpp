@@ -1,10 +1,12 @@
 #include "HybridSshClient.hpp"
 #include "HybridSshConnection.hpp"
+#include "HybridSshForward.hpp"
 #include "RnsshBridge.hpp"
 #include "SshAuthSpec.hpp"
 #include "SshConnectOptionsSpec.hpp"
 #include "SshKeyInfo.hpp"
 #include "SshKeyPair.hpp"
+#include "SshTcpForwardOptionsSpec.hpp"
 #include "rnssh.h"
 #include <cmath>
 #include <vector>
@@ -125,6 +127,34 @@ SshKeyInfo HybridSshClient::inspectPrivateKey(const std::string& privateKey, con
     throw err;
   }
   return keyInfoFrom(r);
+}
+
+std::shared_ptr<Promise<std::shared_ptr<HybridSshLocalForwardSpec>>>
+HybridSshClient::forwardTcp(const SshTcpForwardOptionsSpec& options, const SshForwardHandlers& handlers) {
+  auto promise = Promise<std::shared_ptr<HybridSshLocalForwardSpec>>::create();
+  auto port = [](double v) -> uint16_t { return (v > 0 && v <= 65535) ? static_cast<uint16_t>(v) : 0; };
+  if (options.remoteHost.empty() || port(options.remotePort) == 0) {
+    promise->reject(makeError(1, "remoteHost and remotePort are required"));
+    return promise;
+  }
+  RnsshForwardOptions o;
+  o.bind = options.bindAddress.empty() ? nullptr : options.bindAddress.c_str();
+  o.local_port = port(options.localPort);
+  o.remote_host = options.remoteHost.c_str();
+  o.remote_port = port(options.remotePort);
+  o.max_connections = options.maxConnections > 0 ? static_cast<uint32_t>(options.maxConnections) : 0u;
+
+  // Same context and callbacks as an SSH forward: the handle that comes back
+  // is an HybridSshForward keyed by the same registry.
+  auto* ctx = new ForwardContext{handlers, promise};
+  RnsshForwardCallbacks cbs = ForwardContext::callbacks(ctx);
+  // Rust owns `ctx` from here on; every callback carries the forward id.
+  uint64_t id = rnssh_forward_tcp(&o, &cbs);
+  if (id == 0) {
+    delete ctx;
+    promise->reject(makeError(12, "rnssh_forward_tcp refused the request"));
+  }
+  return promise;
 }
 
 } // namespace margelo::nitro::ssh

@@ -25,6 +25,12 @@ namespace margelo::nitro::ssh { struct SshKeyPair; }
 namespace margelo::nitro::ssh { enum class SshKeyType; }
 // Forward declaration of `SshKeyInfo` to properly resolve imports.
 namespace margelo::nitro::ssh { struct SshKeyInfo; }
+// Forward declaration of `HybridSshLocalForwardSpec` to properly resolve imports.
+namespace margelo::nitro::ssh { class HybridSshLocalForwardSpec; }
+// Forward declaration of `SshTcpForwardOptionsSpec` to properly resolve imports.
+namespace margelo::nitro::ssh { struct SshTcpForwardOptionsSpec; }
+// Forward declaration of `SshForwardHandlers` to properly resolve imports.
+namespace margelo::nitro::ssh { struct SshForwardHandlers; }
 
 #include <string>
 #include <memory>
@@ -36,6 +42,9 @@ namespace margelo::nitro::ssh { struct SshKeyInfo; }
 #include "SshKeyType.hpp"
 #include <optional>
 #include "SshKeyInfo.hpp"
+#include "HybridSshLocalForwardSpec.hpp"
+#include "SshTcpForwardOptionsSpec.hpp"
+#include "SshForwardHandlers.hpp"
 
 namespace margelo::nitro::ssh {
 
@@ -72,6 +81,7 @@ namespace margelo::nitro::ssh {
       virtual void cancelConnect(double id) = 0;
       virtual std::shared_ptr<Promise<SshKeyPair>> generateKeyPair(SshKeyType type, const std::optional<std::string>& comment, const std::optional<std::string>& passphrase) = 0;
       virtual SshKeyInfo inspectPrivateKey(const std::string& privateKey, const std::optional<std::string>& passphrase) = 0;
+      virtual std::shared_ptr<Promise<std::shared_ptr<HybridSshLocalForwardSpec>>> forwardTcp(const SshTcpForwardOptionsSpec& options, const SshForwardHandlers& handlers) = 0;
 
     protected:
       // Hybrid Setup
