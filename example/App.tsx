@@ -12,6 +12,7 @@ import {
   Pressable,
   SafeAreaView,
   ScrollView,
+  type ScrollViewInstance,
   StatusBar as RNStatusBar,
   StyleSheet,
   Text,
@@ -62,7 +63,7 @@ export default function App() {
   const [connection, setConnection] = useState<SshConnection | null>(null)
   const [shell, setShell] = useState<SshShell | null>(null)
   const [forward, setForward] = useState<SshLocalForward | null>(null)
-  const scrollRef = useRef<ScrollView>(null)
+  const scrollRef = useRef<ScrollViewInstance>(null)
 
   const append = useCallback((line: string) => {
     setLog((prev) => [...prev.slice(-60), line])
