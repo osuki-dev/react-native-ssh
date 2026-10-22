@@ -46,7 +46,7 @@ jobs:
         working-directory: example
         run: |
           bun install --frozen-lockfile
-          bunx expo install --check
+          EXPO_OFFLINE=1 bunx expo install --check
           bunx tsc --noEmit
 
   header:
