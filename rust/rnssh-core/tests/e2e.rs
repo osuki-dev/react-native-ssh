@@ -1404,15 +1404,6 @@ async fn weak_rsa_keys_are_refused() {
 async fn second_factor_after_password_and_after_key() {
     // Server: password (or key) is accepted with partial_success, then a
     // keyboard-interactive round must be answered with "otp".
-    //
-    // Upstream limitation: russh's *server* (0.63.1, server/encrypted.rs)
-    // unconditionally resets `partial_success` to false on both the password
-    // and the publickey path, so on the wire this server always reports a
-    // plain failure with `[keyboard-interactive]` remaining. The client's
-    // dedicated `second_factor` branch therefore cannot be exercised here; the
-    // password case below goes through the "server refuses passwords →
-    // app handler" fallback, which yields the same user-visible flow. Real
-    // OpenSSH signals partial success and takes the `second_factor` branch.
     #[derive(Clone)]
     struct TwoFactor {
         authorized: PublicKey,
@@ -1532,20 +1523,15 @@ async fn second_factor_after_password_and_after_key() {
     .expect("password then otp");
     conn.disconnect().await;
 
-    // key + OTP: russh's *server* (0.63.1) cannot signal partial success on
-    // the publickey path (server/encrypted.rs resets `partial_success` to
-    // false right after setting it), so against this test server the key
-    // attempt reads as a plain rejection. Real OpenSSH does signal it and the
-    // client branch is identical to the password one (`second_factor`), so
-    // only assert that the key path still fails cleanly here.
+    // key + OTP via the app's handler (partial success is preserved in russh 0.64).
     let auth = Auth::PrivateKey {
         pem: kp.private_key.clone(),
         passphrase: None,
     };
-    let err = Connection::connect(options(port, auth), otp_events())
+    let conn = Connection::connect(options(port, auth), otp_events())
         .await
-        .unwrap_err();
-    assert_eq!(err.code, rnssh_core::ErrorCode::AuthFailed, "{err}");
+        .expect("key then otp");
+    conn.disconnect().await;
 
     // No handler → clear failure, not a hang (the auto-answer uses the
     // password, which is not a valid OTP).

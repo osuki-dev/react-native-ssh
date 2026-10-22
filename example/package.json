@@ -11,16 +11,16 @@
     "postinstall": "node ./scripts/link-package.js"
   },
   "dependencies": {
-    "expo": "~57.0.9",
-    "expo-build-properties": "~57.0.8",
-    "expo-dev-client": "~57.0.0",
+    "expo": "~57.0.31",
+    "expo-build-properties": "~57.0.22",
+    "expo-dev-client": "~57.0.20",
     "expo-status-bar": "~57.0.1",
     "react": "19.2.8",
-    "react-native": "0.86.2",
-    "react-native-nitro-modules": "0.36.5"
+    "react-native": "0.86.3",
+    "react-native-nitro-modules": "0.37.1"
   },
   "devDependencies": {
     "@types/react": "~19.2.18",
-    "typescript": "~5.9.0"
+    "typescript": "~6.0.3"
   }
 }
