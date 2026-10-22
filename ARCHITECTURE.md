@@ -156,13 +156,11 @@ Upstream choices:
 * **Compression is off** (`flate2` not enabled). No benefit on mobile links
   and it removes the decompression-bomb class (CVE-2026-46702) entirely.
 * `des` / `dsa` features are never enabled.
-* russh floor: **0.63.1** (covers every 2025–2026 advisory). CI runs
+* russh floor: **0.64.1** (includes the upstream agent-protocol allocation fix). CI runs
   `cargo audit`.
-* Known upstream quirk (server side only, affects our test server, not real
-  sshd): russh's server never signals `partial_success`, so the client's
-  second-factor branch (password/key accepted → keyboard-interactive OTP via
-  `onKeyboardInteractive`) is covered by code review and the fallback path,
-  not by an in-process test.
+* russh 0.64 preserves server-side `partial_success`, so the in-process tests
+  cover password/key accepted → keyboard-interactive OTP via
+  `onKeyboardInteractive` directly.
 * **Known upstream advisory, accepted with mitigation:** RUSTSEC-2023-0071,
   the Marvin timing side-channel in the `rsa` crate, has no fixed release.
   It affects RSA *private key* operations only. We keep russh's `rsa`

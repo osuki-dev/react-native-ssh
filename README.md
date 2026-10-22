@@ -21,7 +21,7 @@ terminal**.
 - Ed25519 / ECDSA / RSA key generation and inspection (Ed25519 by default;
   RSA user keys are supported for legacy servers but not recommended, see
   Security notes).
-- iOS 15.1+ (Expo SDK 57 itself requires 16.4), Android 7 (API 24)+ on `arm64-v8a` / `x86_64`, 16 KB page ready.
+- iOS 15.1+ (the Expo SDK 58 example requires 16.4), Android 7 (API 24)+ on `arm64-v8a` / `x86_64`, 16 KB page ready.
 
 ## Requirements
 

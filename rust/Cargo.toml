@@ -15,7 +15,7 @@ rust-version = "1.85"
 # `flate2` (compression) is deliberately NOT enabled: no benefit on mobile
 # links and it is where the CVE-2026-46702 decompression-bomb class lives.
 # `des` / `dsa` are insecure and must never be enabled.
-russh = { version = "0.63.1", default-features = false, features = ["aws-lc-rs", "rsa"] }
+russh = { version = "0.64.1", default-features = false, features = ["aws-lc-rs", "rsa"] }
 tokio = { version = "1.47", features = ["rt-multi-thread", "net", "sync", "time", "io-util", "macros"] }
 thiserror = "2"
 log = "0.4"
